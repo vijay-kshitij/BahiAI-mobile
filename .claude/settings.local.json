@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s http://localhost:3000/api/health)",
+      "Bash(curl -s -o /tmp/test_en.mp3 -w '%{http_code} | content-type: %{content_type} | size: %{size_download} bytes' -X POST http://localhost:3000/api/tts -H 'Content-Type: application/json' -d '{\"text\": \"Hello, this is a test of ElevenLabs voice.\", \"language\": \"en-IN\"}')",
+      "Bash(curl -s -X POST http://localhost:3000/api/tts -H 'Content-Type: application/json' -d '{\"text\": \"Hello, this is a test.\", \"language\": \"en-IN\"}')"
+    ]
+  }
+}

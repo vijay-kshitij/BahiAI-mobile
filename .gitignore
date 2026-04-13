@@ -1,0 +1,15 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+frappe_docker/

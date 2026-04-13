@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Navi AI Copilot — Demo</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap');
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'DM Sans', sans-serif;
+            background: #f5f5f7;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .demo-page {
+            text-align: center;
+            padding: 40px;
+        }
+
+        .demo-page h1 {
+            font-size: 32px;
+            font-weight: 700;
+            color: #1a1a2e;
+            margin-bottom: 8px;
+            letter-spacing: -0.02em;
+        }
+
+        .demo-page p {
+            font-size: 16px;
+            color: #666;
+            margin-bottom: 32px;
+        }
+
+        .demo-badge {
+            display: inline-block;
+            padding: 6px 14px;
+            background: #1a1a2e;
+            color: #6ee7b7;
+            font-size: 12px;
+            font-weight: 600;
+            border-radius: 20px;
+            letter-spacing: 0.03em;
+            margin-bottom: 24px;
+        }
+
+        .demo-hint {
+            background: white;
+            border: 1px solid #e0e0e5;
+            border-radius: 12px;
+            padding: 20px 28px;
+            display: inline-block;
+            text-align: left;
+            color: #444;
+            font-size: 14px;
+            line-height: 2;
+        }
+
+        .demo-hint strong {
+            color: #1a1a2e;
+        }
+
+        .demo-arrow {
+            position: fixed;
+            bottom: 40px;
+            right: 96px;
+            color: #1a1a2e;
+            font-size: 14px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            opacity: 0.7;
+        }
+
+        .demo-arrow svg {
+            width: 24px;
+            height: 24px;
+            animation: point 1.5s ease-in-out infinite;
+        }
+
+        @keyframes point {
+            0%, 100% { transform: translate(0, 0); }
+            50% { transform: translate(4px, 4px); }
+        }
+    </style>
+</head>
+<body>
+    <div class="demo-page">
+        <div class="demo-badge">MVP DEMO</div>
+        <h1>Navi AI Copilot</h1>
+        <p>An AI assistant that controls your ERPNext through chat and voice, in English and Hindi.</p>
+
+        <div class="demo-hint">
+            <strong>Try saying:</strong><br>
+            → "Create an invoice for Priya Patel for 2 laptops at 75000 each"<br>
+            → "प्रिया पटेल के लिए 1 लैपटॉप का इनवॉइस बनाओ"<br>
+            → "Show me unpaid sales invoices"<br>
+            → "What is the stock balance for Laptop?"<br>
+            → "Show me low stock items"<br>
+            → "Open the customer list"
+        </div>
+    </div>
+
+    <div class="demo-arrow">
+        Click here
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.59 7.41L13 6l6 6-6 6-1.41-1.41L15.17 13H2v-2h13.17l-3.58-3.59zM20 6v12h2V6h-2z"/></svg>
+    </div>
+
+    <!-- THIS IS THE MAGIC LINE — one script tag adds the entire copilot -->
+    <script
+        src="/widget.js"
+        data-title="Navi"></script>
+</body>
+</html>
