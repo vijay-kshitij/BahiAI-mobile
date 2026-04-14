@@ -1,6 +1,10 @@
 import json
+import logging
 import re
 from typing import Any
+
+log = logging.getLogger("navi")
+logging.basicConfig(level=logging.INFO)
 
 
 MODEL_NAME = "claude-sonnet-4-6"
@@ -11,7 +15,7 @@ TOOLS = [
         "name": "list_documents",
         "description": (
             "List ERPNext documents with optional filters. Use for customers, items, sales invoices, "
-            "suppliers, sales orders, and similar lookups. "
+            "and payment entries. "
             "Supports date filters, status filters, and any field on the doctype. "
             "Each filter is a [field, operator, value] array. "
             "Operators: '=', '!=', '>', '<', '>=', '<=', 'like', 'not like'. "
@@ -26,7 +30,7 @@ TOOLS = [
             "properties": {
                 "doctype": {
                     "type": "string",
-                    "description": "ERPNext document type such as Customer, Item, Sales Invoice, Supplier, Sales Order, or Purchase Order.",
+                    "description": "ERPNext document type: Customer, Item, Sales Invoice, or Payment Entry.",
                 },
                 "filters": {
                     "type": "array",
@@ -37,6 +41,11 @@ TOOLS = [
                         "minItems": 3,
                         "maxItems": 3,
                     },
+                },
+                "fields": {
+                    "type": "array",
+                    "description": "Optional list of field names to return. If omitted, default fields are returned.",
+                    "items": {"type": "string"},
                 },
                 "limit": {
                     "type": "integer",
@@ -49,7 +58,7 @@ TOOLS = [
     },
     {
         "name": "get_document",
-        "description": "Get a specific ERPNext document by its exact name or ID.",
+        "description": "Get a specific ERPNext document by its exact name or ID. Returns all fields.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -100,7 +109,7 @@ TOOLS = [
     },
     {
         "name": "create_item",
-        "description": "Create a new inventory item in ERPNext.",
+        "description": "Create a new item in ERPNext.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -131,11 +140,6 @@ TOOLS = [
                     "type": "string",
                     "description": "Due date in YYYY-MM-DD format when provided by the user.",
                 },
-                "update_stock": {
-                    "type": "boolean",
-                    "description": "Set true only when the user clearly wants the invoice to also reduce stock.",
-                    "default": False,
-                },
                 "items": {
                     "type": "array",
                     "items": {
@@ -143,7 +147,7 @@ TOOLS = [
                         "properties": {
                             "item_code": {
                                 "type": "string",
-                                "description": "ERPNext item code or English/plain-language item name, such as SKU002 or Laptop. Do not send Devanagari item names into ERP records.",
+                                "description": "ERPNext item code or English/plain-language item name, such as SKU002 or Laptop.",
                             },
                             "qty": {"type": "number"},
                             "rate": {"type": "number"},
@@ -161,15 +165,58 @@ TOOLS = [
         },
     },
     {
-        "name": "get_stock_balance",
-        "description": "Get stock balances for an item code or plain-language item name, optionally in a specific warehouse.",
+        "name": "send_invoice",
+        "description": (
+            "Send a Draft sales invoice to the customer on WhatsApp. "
+            "Generates a WhatsApp deeplink the user can tap to send the invoice PDF. "
+            "Use this when the user says 'send it', 'share it', 'send to customer', or confirms "
+            "after you've asked 'Should I send it on WhatsApp?'. "
+            "Optionally pass a phone number if the customer has none on file."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "item_code": {"type": "string"},
-                "warehouse": {"type": "string"},
+                "invoice_name": {
+                    "type": "string",
+                    "description": "The Sales Invoice ID, e.g. ACC-SINV-2026-00001.",
+                },
+                "phone": {
+                    "type": "string",
+                    "description": "Optional phone number with country code (e.g. +919876543210). Only needed if the customer has no mobile number saved.",
+                },
             },
-            "required": ["item_code"],
+            "required": ["invoice_name"],
+        },
+    },
+    {
+        "name": "record_payment",
+        "description": (
+            "Record a payment against a Sales Invoice. Creates a Payment Entry in ERPNext. "
+            "Use when the user says a customer paid, or asks to record/receive a payment."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "invoice_name": {
+                    "type": "string",
+                    "description": "The Sales Invoice ID, e.g. ACC-SINV-2026-00001.",
+                },
+                "amount": {
+                    "type": "number",
+                    "description": "Payment amount. If omitted, pays the full outstanding amount.",
+                },
+                "mode_of_payment": {
+                    "type": "string",
+                    "description": "Mode of payment such as Cash, Bank Transfer, UPI. Default is Cash.",
+                    "default": "Cash",
+                },
+                "confirmed": {
+                    "type": "boolean",
+                    "description": "Only set true after the user has explicitly confirmed the payment details.",
+                    "default": False,
+                },
+            },
+            "required": ["invoice_name"],
         },
     },
     {
@@ -186,21 +233,29 @@ TOOLS = [
         },
     },
     {
-        "name": "list_low_stock_items",
-        "description": "List inventory bins at or below a stock threshold. Use this for low stock or reorder-style questions.",
+        "name": "update_document",
+        "description": (
+            "Update fields on an existing ERPNext document. "
+            "Use for changing due date, customer details, item rates, etc. "
+            "Only works on Draft documents. Submitted documents must be amended."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "threshold": {
-                    "type": "number",
-                    "default": 10,
+                "doctype": {
+                    "type": "string",
+                    "description": "Document type: Sales Invoice, Customer, Item, etc.",
                 },
-                "warehouse": {"type": "string"},
-                "limit": {
-                    "type": "integer",
-                    "default": 20,
+                "name": {
+                    "type": "string",
+                    "description": "The document ID, e.g. ACC-SINV-2026-00001.",
+                },
+                "updates": {
+                    "type": "object",
+                    "description": "Key-value pairs of fields to update. e.g. {\"due_date\": \"2026-05-01\"}",
                 },
             },
+            "required": ["doctype", "name", "updates"],
         },
     },
     {
@@ -221,79 +276,87 @@ TOOLS = [
     },
     {
         "name": "navigate_to_page",
-        "description": "Navigate the user to an ERPNext page such as a list view, form, dashboard, or settings page.",
+        "description": (
+            "Navigate the user to a page in the app. Use this when the user says "
+            "'show me', 'open', 'list', or asks to see invoices, customers, or a specific record. "
+            "ALWAYS prefer navigation over dumping data into chat for list/browse requests."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {
+                "page": {
                     "type": "string",
-                    "description": (
-                        "ERPNext path starting with /app/. "
-                        "For plain list or form views: /app/customer, /app/sales-invoice, /app/item, /app/sales-invoice/ACC-SINV-2026-00001. "
-                        "For filtered list views append URL query params. Filter value format rules:\n"
-                        "  - Equality: ?field=value  e.g. ?posting_date=2026-04-03  or  ?status=Unpaid\n"
-                        "  - LIKE (contains): ?field=like,%value%  e.g. ?customer_name=like,%Priya%  or  ?item_name=like,%Laptop%\n"
-                        "  - Comparison: ?field=operator,value  e.g. ?outstanding_amount=>,0  or  ?posting_date=>=,2026-04-01\n"
-                        "Always use a comma between operator and value for non-equality filters. "
-                        "Do not URL-encode the % signs in LIKE patterns — write them as literal % characters. "
-                        "IMPORTANT: Filter values must always be in Latin/English script, never Devanagari. "
-                        "If the user typed a name in Hindi/Devanagari (e.g. प्रिया), transliterate it to Latin (Priya) before using it as a filter value. "
-                        "ERPNext stores all names in Latin script so Devanagari filter values will never match. "
-                        "Only use field names that actually exist on the doctype."
-                    ),
+                    "enum": ["invoices", "customers", "invoice-detail", "customer-detail"],
+                    "description": "Which page to navigate to.",
+                },
+                "filter": {
+                    "type": "string",
+                    "description": "Optional filter: 'unpaid', 'overdue', 'paid' for invoices list.",
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Document name/ID for detail pages (e.g. ACC-SINV-2026-00001 or Priya Patel).",
                 },
                 "description": {
                     "type": "string",
-                    "description": "Short human description of the destination.",
+                    "description": "Short description of what the user will see.",
                 },
             },
-            "required": ["path", "description"],
+            "required": ["page"],
         },
     },
 ]
 
 
-SYSTEM_PROMPT = """You are Navi, an AI copilot for SMB teams using ERPNext.
-Your job is to help users complete invoicing and inventory work through chat.
+SYSTEM_PROMPT = """You are Navi, an AI invoicing assistant for small businesses.
+Your job is to help users manage invoicing — create invoices, record payments, track receivables, and manage customers and items — entirely through chat.
 
-You are especially good at:
-- creating sales invoices
-- answering stock questions
-- finding customers, items, and invoices
-- flagging low-stock items
-- navigating users to the right ERPNext screen
+## Invoice creation — STRICT RULES
+When the user asks to create an invoice, you need exactly THREE things: customer name, item(s) with quantity, and rate.
+- If the user gives all three in one message → call create_sales_invoice IMMEDIATELY. Do not ask anything else.
+- If only customer is missing → ask ONLY for customer name.
+- If only items are missing → ask ONLY for items with quantity and rate.
+- Once you have customer + items + rates, ask: "Any due date? Or should I go ahead and create it?" This is the ONLY optional question you may ask — and only ONCE.
+- If the user replies with a date → include it. If they say "no", "go ahead", "create it", or anything that isn't a date → call create_sales_invoice immediately without a due date.
+- NEVER ask for customer type, customer group, territory, item group, UOM, or any other field.
+- NEVER check if a customer or item exists before creating an invoice. The backend auto-creates missing ones.
+- Maximum ONE question per turn. Never ask for two things at once.
 
-## Navigation rule (highest priority)
-Whenever the user says "show me", "open", "take me to", "go to", "list", or asks to see any
-ERPNext list or page — ALWAYS call navigate_to_page immediately to take them there.
-Do NOT just fetch and display results in the chat. Navigate first, then give a one-line
-confirmation in chat (e.g. "Opening the customer list now.").
+## Navigation — STRICT RULES
+When the user says "show me", "open", "list", or wants to SEE invoices/customers:
+- ALWAYS use navigate_to_page to send them to the page. Do NOT dump data into chat.
+- "show me unpaid invoices" → navigate_to_page(page="invoices", filter="unpaid")
+- "show me all invoices" → navigate_to_page(page="invoices")
+- "show me customers" → navigate_to_page(page="customers")
+- "open invoice ACC-SINV-001" → navigate_to_page(page="invoice-detail", id="ACC-SINV-001")
+- "show me Priya's details" → navigate_to_page(page="customer-detail", id="Priya Patel")
+After navigating, reply with a SHORT one-line confirmation like "Opening unpaid invoices."
 
-Examples that must trigger navigate_to_page:
-- "show me the customer list" → navigate to /app/customer
-- "open sales invoices" → navigate to /app/sales-invoice
-- "show me unpaid invoices" → navigate to /app/sales-invoice?outstanding_amount=>,0
-- "show me invoices from yesterday" → navigate to /app/sales-invoice?posting_date=<yesterday's date>
-- "show me Priya Patel's invoices" → navigate to /app/sales-invoice?customer=Priya%20Patel
-- "take me to the item list" → navigate to /app/item
+For DATA questions (not browsing) like "how many unpaid invoices?" or "what's Rajesh's total outstanding?" → answer in chat using tools, don't navigate.
 
-For date-filtered navigation, always calculate the actual YYYY-MM-DD date from the
-relative phrase before building the path.
+## Sending invoices — STRICT RULES
+After an invoice is created, it is a Draft. The user must explicitly send it before it becomes Unpaid.
+- Immediately after create_sales_invoice succeeds, ask: "Draft invoice {ID} created. Should I send it to {customer} on WhatsApp?"
+- If the user says yes / send / share it → call send_invoice with the invoice_name.
+- If send_invoice returns an error about a missing phone number → ask the user for the customer's WhatsApp number, then call send_invoice again with the phone argument.
+- After send_invoice succeeds, reply with a SHORT confirmation like "Ready to send — tap the button below."
+- Do NOT describe the WhatsApp link in text; the UI shows a button.
 
-For data questions that are NOT about seeing a list (e.g. "what is the stock balance for Laptop?",
-"how many unpaid invoices do we have?", "what is the total of invoice ACC-001?") — answer in chat
-using the appropriate tool without navigating.
+## Payment recording
+When the user says someone paid or asks to record a payment:
+1. Identify the invoice (search if needed)
+2. Confirm the amount (default to full outstanding)
+3. Ask for confirmation before recording
 
-## Other rules
-- Keep replies short, practical, and business-friendly.
-- Always use tools for factual ERPNext data. Never invent customers, items, balances, or invoices.
-- For invoice creation and deletion, always get an explicit confirmation before the final action.
-- When a tool result says confirmation is required, ask for confirmation in the user's current language and wait.
-- Keep ERPNext master data and transaction fields in English/Latin script even when the user is speaking Hindi.
-- If a user asks in Hindi, you may reply in Hindi, but customers, items, and created ERP records must use English/transliterated names, not Devanagari.
-- Treat item references from users as human-friendly labels. The backend can resolve names like Laptop to real ERPNext item codes such as SKU002.
-- After creating a document, navigate to it automatically and mention the document ID.
-- If a request is ambiguous, ask only for the missing business detail.
+## Rules
+- Keep replies SHORT. One or two sentences max.
+- Always use tools for factual data. Never invent balances or totals.
+- For payment recording and deletion, get explicit confirmation first.
+- When a tool result says confirmation is required, show the preview and wait.
+- Keep ERP data in English/Latin script even when user speaks Hindi.
+- After creating a document, mention the document ID.
+- Use ₹ for amounts.
+- Minimize questions. If you have enough info to act, act immediately.
 """
 
 
@@ -309,7 +372,8 @@ def document_path(doctype: str, name: str | None = None) -> str:
 
 
 def tool_requires_confirmation(tool_name: str) -> bool:
-    return tool_name in {"create_sales_invoice", "delete_document"}
+    # create_sales_invoice handles its own confirmation (resolves items/customers first)
+    return tool_name in {"delete_document", "record_payment"}
 
 
 def _summarize_line_items(items: list[dict[str, Any]]) -> list[str]:
@@ -321,7 +385,7 @@ def _summarize_line_items(items: list[dict[str, Any]]) -> list[str]:
         if rate is None:
             lines.append(f"{qty} x {item_code}")
         else:
-            lines.append(f"{qty} x {item_code} @ {rate}")
+            lines.append(f"{qty} x {item_code} @ ₹{rate}")
     return lines
 
 
@@ -362,8 +426,12 @@ def _item_query_variants(query: str) -> list[str]:
     return variants
 
 
-def resolve_item_code(erp_client, query: str) -> tuple[str | None, str | None]:
-    """Resolve an item name or code to ERPNext's actual item_code for demo use."""
+def resolve_item_code(erp_client, query: str, rate: float = 0, auto_create: bool = True) -> tuple[str, str | None, bool]:
+    """Resolve an item name/code to ERPNext's actual item_code.
+
+    Returns (item_code, error_or_none, was_created).
+    If auto_create is True and no match is found, creates the item automatically.
+    """
     variants = _item_query_variants(query)
     items = erp_client.get_list(
         "Item",
@@ -385,7 +453,7 @@ def resolve_item_code(erp_client, query: str) -> tuple[str | None, str | None]:
         None,
     )
     if exact_match:
-        return exact_match.get("item_code"), None
+        return exact_match.get("item_code"), None, False
 
     partial_matches = [
         item
@@ -397,16 +465,90 @@ def resolve_item_code(erp_client, query: str) -> tuple[str | None, str | None]:
         )
     ]
     if len(partial_matches) == 1:
-        return partial_matches[0].get("item_code"), None
+        return partial_matches[0].get("item_code"), None, False
 
     if len(partial_matches) > 1:
         match_list = ", ".join(
             f"{item.get('item_code')} ({item.get('item_name')})"
             for item in partial_matches[:5]
         )
-        return None, f"Multiple items match '{query}': {match_list}"
+        return None, f"Multiple items match '{query}': {match_list}", False
 
-    return None, f"No items found for '{query}'"
+    # Not found — auto-create if allowed
+    if auto_create:
+        item_name = query.strip().title()
+        item_code = re.sub(r"[^a-zA-Z0-9]+", "-", query.strip().upper()).strip("-")
+        try:
+            result = erp_client.create_document("Item", {
+                "item_code": item_code,
+                "item_name": item_name,
+                "item_group": "Products",
+                "stock_uom": "Nos",
+                "standard_rate": rate,
+                "is_stock_item": 0,
+            })
+            return result.get("item_code") or item_code, None, True
+        except Exception:
+            # Might already exist (race condition / duplicate) — return the code anyway
+            return item_code, None, True
+
+    return None, f"No items found for '{query}'", False
+
+
+def normalize_phone(raw: str, default_country_code: str = "91") -> str | None:
+    """Normalize a phone number to E.164 digits (no +, no spaces). Returns None if invalid."""
+    if not raw:
+        return None
+    digits = re.sub(r"\D", "", str(raw))
+    if not digits:
+        return None
+    # If it looks like a 10-digit local Indian number, prepend country code
+    if len(digits) == 10:
+        digits = default_country_code + digits
+    # Expect 11-15 digits after normalization
+    if len(digits) < 11 or len(digits) > 15:
+        return None
+    return digits
+
+
+def resolve_customer(erp_client, customer_name: str) -> tuple[str, bool]:
+    """Resolve a customer name. Auto-creates if not found.
+
+    Returns (customer_name_in_erp, was_created).
+    """
+    # Exact match
+    try:
+        doc = erp_client.get_document("Customer", customer_name)
+        if doc and doc.get("name"):
+            return doc["name"], False
+    except Exception:
+        pass
+
+    # Search by partial name
+    results = erp_client.search("Customer", customer_name, fields=["name", "customer_name"], limit=5)
+    if results:
+        # Check for close match
+        for r in results:
+            if (r.get("name", "").lower() == customer_name.lower()
+                    or r.get("customer_name", "").lower() == customer_name.lower()):
+                return r["name"], False
+        # If only one result, use it
+        if len(results) == 1:
+            return results[0]["name"], False
+
+    # Not found — auto-create
+    clean_name = customer_name.strip().title()
+    try:
+        result = erp_client.create_document("Customer", {
+            "customer_name": clean_name,
+            "customer_type": "Individual",
+            "customer_group": "Individual",
+            "territory": "India",
+        })
+        return result.get("name") or clean_name, True
+    except Exception:
+        # Might already exist (race condition / duplicate) — return the name anyway
+        return clean_name, False
 
 
 def search_item_catalog(erp_client, query: str, limit: int = 10) -> list[dict[str, Any]]:
@@ -436,9 +578,16 @@ def build_confirmation_preview(tool_name: str, tool_input: dict[str, Any]) -> st
             parts.append("Items: " + "; ".join(lines))
         if tool_input.get("due_date"):
             parts.append(f"Due date: {tool_input['due_date']}")
-        if tool_input.get("update_stock"):
-            parts.append("This invoice will also update stock.")
         return ". ".join(parts) + ". Please confirm whether I should create it."
+
+    if tool_name == "record_payment":
+        parts = [f"Record payment against invoice {tool_input['invoice_name']}"]
+        if tool_input.get("amount"):
+            parts.append(f"Amount: ₹{tool_input['amount']}")
+        else:
+            parts.append("Amount: full outstanding balance")
+        parts.append(f"Mode: {tool_input.get('mode_of_payment', 'Cash')}")
+        return ". ".join(parts) + ". Please confirm whether I should record this payment."
 
     if tool_name == "delete_document":
         return (
@@ -464,6 +613,7 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
             result = erp_client.get_list(
                 tool_input["doctype"],
                 filters=tool_input.get("filters") or None,
+                fields=tool_input.get("fields") or None,
                 limit=tool_input.get("limit", 20),
             )
             return {"status": "success", "data": result}
@@ -505,7 +655,6 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
                 "status": "success",
                 "customer_name": result.get("customer_name"),
                 "name": result.get("name"),
-                "path": document_path("Customer", result.get("name")),
             }
 
         if tool_name == "create_item":
@@ -524,55 +673,193 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
                 "status": "success",
                 "item_code": result.get("item_code"),
                 "item_name": result.get("item_name"),
-                "path": document_path("Item", result.get("name")),
             }
 
         if tool_name == "create_sales_invoice":
+            log.info("create_sales_invoice called | confirmed=%s | keys=%s",
+                     tool_input.get("confirmed"), list(tool_input.keys()))
+
+            # ── CONFIRMED: skip resolution, use stored values, create immediately ──
+            if tool_input.get("confirmed"):
+                final_customer = tool_input.get("_resolved_customer")
+                final_items = tool_input.get("_resolved_items")
+
+                if not final_customer or not final_items:
+                    log.error("CONFIRMED but missing resolved data! customer=%s items=%s",
+                              final_customer, final_items)
+                    return {"status": "error", "error": "Internal error: missing resolved data. Please try creating the invoice again."}
+
+                data = {
+                    "customer": final_customer,
+                    "items": final_items,
+                }
+                if tool_input.get("due_date"):
+                    data["due_date"] = tool_input["due_date"]
+
+                log.info("Creating Sales Invoice: %s", json.dumps(data, default=str))
+                created = erp_client.create_document("Sales Invoice", data)
+                invoice_name = created.get("name")
+                log.info("Created invoice (Draft): %s", invoice_name)
+
+                # Fetch final state for accurate card data. Invoice stays as Draft
+                # until user explicitly sends it via send_invoice.
+                try:
+                    doc = erp_client.get_document("Sales Invoice", invoice_name)
+                except Exception:
+                    doc = created
+
+                return {
+                    "status": "success",
+                    "doctype": "Sales Invoice",
+                    "invoice_name": invoice_name,
+                    "customer": doc.get("customer"),
+                    "grand_total": doc.get("grand_total"),
+                    "outstanding_amount": doc.get("outstanding_amount"),
+                    "posting_date": doc.get("posting_date"),
+                    "due_date": doc.get("due_date"),
+                    "invoice_status": doc.get("status", "Draft"),
+                    "items": doc.get("items", []),
+                }
+
+            # ── NOT CONFIRMED: resolve customer/items, then ask for confirmation ──
+            auto_created = []
+
+            customer_name, customer_created = resolve_customer(erp_client, tool_input["customer"])
+            log.info("Resolved customer '%s' → '%s' (created=%s)",
+                     tool_input["customer"], customer_name, customer_created)
+            if customer_created:
+                auto_created.append(f"New customer '{customer_name}' added")
+
             resolved_items = []
             for item in tool_input["items"]:
-                resolved_code, error = resolve_item_code(erp_client, item["item_code"])
+                rate = item.get("rate", 0)
+                resolved_code, error, item_created = resolve_item_code(
+                    erp_client, item["item_code"], rate=rate, auto_create=True,
+                )
+                log.info("Resolved item '%s' → '%s' (created=%s, error=%s)",
+                         item["item_code"], resolved_code, item_created, error)
                 if error:
                     return {"status": "error", "error": error}
+                if item_created:
+                    auto_created.append(f"New item '{resolved_code}' added")
                 resolved_items.append(
                     {
                         "item_code": resolved_code,
                         "qty": item["qty"],
-                        "rate": item.get("rate", 0),
+                        "rate": rate,
                     }
                 )
 
-            data = {
-                "customer": tool_input["customer"],
-                "update_stock": tool_input.get("update_stock", False),
-                "items": resolved_items,
-            }
-            if tool_input.get("due_date"):
-                data["due_date"] = tool_input["due_date"]
-
-            result = erp_client.create_document("Sales Invoice", data)
+            preview = build_confirmation_preview(tool_name, tool_input)
+            if auto_created:
+                preview = ". ".join(auto_created) + ". " + preview
             return {
-                "status": "success",
-                "invoice_name": result.get("name"),
-                "customer": result.get("customer"),
-                "grand_total": result.get("grand_total"),
-                "outstanding_amount": result.get("outstanding_amount"),
-                "path": document_path("Sales Invoice", result.get("name")),
+                "status": "confirmation_required",
+                "tool_name": tool_name,
+                "preview_message": preview,
+                "pending_input": {
+                    **tool_input,
+                    "_resolved_customer": customer_name,
+                    "_resolved_items": resolved_items,
+                },
             }
 
-        if tool_name == "get_stock_balance":
-            resolved_code, error = resolve_item_code(erp_client, tool_input["item_code"])
-            if error:
-                return {"status": "error", "error": error}
+        if tool_name == "send_invoice":
+            invoice_name = tool_input["invoice_name"]
+            invoice = erp_client.get_document("Sales Invoice", invoice_name)
+            if not invoice:
+                return {"status": "error", "error": f"Invoice {invoice_name} not found."}
 
-            result = erp_client.get_stock_balance(
-                resolved_code,
-                warehouse=tool_input.get("warehouse"),
-            )
+            if int(invoice.get("docstatus", 0)) != 0:
+                return {
+                    "status": "error",
+                    "error": f"Invoice {invoice_name} is not a Draft — it's already been sent.",
+                }
+
+            customer_name = invoice.get("customer")
+            customer_doc = erp_client.get_document("Customer", customer_name)
+            stored_phone = customer_doc.get("mobile_no") or customer_doc.get("phone")
+            phone = normalize_phone(tool_input.get("phone") or stored_phone)
+
+            if not phone:
+                return {
+                    "status": "error",
+                    "error": (
+                        f"No WhatsApp number on file for {customer_name}. "
+                        "Please provide their phone number (with country code) so I can send the invoice."
+                    ),
+                }
+
+            # If a new phone was provided, save it to the customer record for next time
+            if tool_input.get("phone") and phone != normalize_phone(stored_phone):
+                try:
+                    erp_client.update_document("Customer", customer_name, {"mobile_no": phone})
+                except Exception as exc:
+                    log.warning("Failed to save phone for %s: %s", customer_name, exc)
+
+            grand_total = invoice.get("grand_total", 0)
             return {
                 "status": "success",
-                "item_code": resolved_code,
-                "warehouse": tool_input.get("warehouse"),
-                "data": result,
+                "action_type": "send_invoice",
+                "invoice_name": invoice_name,
+                "customer": customer_name,
+                "phone": phone,
+                "grand_total": grand_total,
+            }
+
+        if tool_name == "record_payment":
+            # Fetch the invoice to get outstanding amount and customer
+            invoice = erp_client.get_document("Sales Invoice", tool_input["invoice_name"])
+            if not invoice:
+                return {"status": "error", "error": f"Invoice {tool_input['invoice_name']} not found."}
+
+            outstanding = float(invoice.get("outstanding_amount", 0))
+            if outstanding <= 0:
+                return {"status": "error", "error": f"Invoice {tool_input['invoice_name']} is already fully paid."}
+
+            amount = tool_input.get("amount") or outstanding
+            if amount > outstanding:
+                return {
+                    "status": "error",
+                    "error": f"Payment amount ₹{amount} exceeds outstanding ₹{outstanding}.",
+                }
+
+            customer = invoice.get("customer")
+            company = invoice.get("company")
+
+            payment_data = {
+                "payment_type": "Receive",
+                "party_type": "Customer",
+                "party": customer,
+                "paid_amount": amount,
+                "received_amount": amount,
+                "mode_of_payment": tool_input.get("mode_of_payment", "Cash"),
+                "references": [
+                    {
+                        "reference_doctype": "Sales Invoice",
+                        "reference_name": tool_input["invoice_name"],
+                        "allocated_amount": amount,
+                    }
+                ],
+            }
+            if company:
+                payment_data["company"] = company
+
+            result = erp_client.create_document("Payment Entry", payment_data)
+            # Submit the payment entry so it actually affects the ledger
+            payment_name = result.get("name")
+            if payment_name:
+                erp_client.submit_document("Payment Entry", payment_name)
+
+            return {
+                "status": "success",
+                "doctype": "Payment Entry",
+                "payment_name": payment_name,
+                "invoice_name": tool_input["invoice_name"],
+                "customer": customer,
+                "amount": amount,
+                "outstanding_after": outstanding - amount,
+                "mode_of_payment": tool_input.get("mode_of_payment", "Cash"),
             }
 
         if tool_name == "list_unpaid_sales_invoices":
@@ -586,21 +873,21 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
                     "grand_total",
                     "outstanding_amount",
                     "due_date",
+                    "posting_date",
                 ],
                 limit=tool_input.get("limit", 10),
             )
             return {"status": "success", "data": result}
 
-        if tool_name == "list_low_stock_items":
-            result = erp_client.get_low_stock_items(
-                threshold=tool_input.get("threshold", 10),
-                warehouse=tool_input.get("warehouse"),
-                limit=tool_input.get("limit", 20),
+        if tool_name == "update_document":
+            result = erp_client.update_document(
+                tool_input["doctype"],
+                tool_input["name"],
+                tool_input["updates"],
             )
             return {
                 "status": "success",
-                "threshold": tool_input.get("threshold", 10),
-                "warehouse": tool_input.get("warehouse"),
+                "message": f"Updated {tool_input['doctype']} {tool_input['name']}.",
                 "data": result,
             }
 
@@ -612,10 +899,25 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
             }
 
         if tool_name == "navigate_to_page":
+            page = tool_input["page"]
+            doc_id = tool_input.get("id", "")
+            filt = tool_input.get("filter", "")
+
+            if page == "invoices":
+                path = "/invoices" + (f"?status={filt}" if filt else "")
+            elif page == "customers":
+                path = "/customers" + (f"?filter={filt}" if filt else "")
+            elif page == "invoice-detail" and doc_id:
+                path = f"/invoice/{doc_id}"
+            elif page == "customer-detail" and doc_id:
+                path = f"/customer/{doc_id}"
+            else:
+                path = "/"
+
             return {
                 "status": "success",
                 "action": "navigate",
-                "path": tool_input["path"],
+                "path": path,
                 "description": tool_input.get("description", ""),
             }
 
@@ -625,20 +927,13 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
         return {"status": "error", "error": str(exc)}
 
 
-def extract_actions_from_result(result: dict[str, Any]) -> list[dict[str, Any]]:
-    if result.get("action") == "navigate" and result.get("path"):
-        return [
-            {
-                "type": "navigate",
-                "path": result["path"],
-                "description": result.get("description", ""),
-            }
-        ]
-    return []
-
-
 def is_affirmative(text: str) -> bool:
     normalized = text.strip().lower()
+
+    # Check for negative phrases FIRST to avoid "don't do it" matching "do it"
+    if is_negative(text):
+        return False
+
     exact_matches = {
         "yes",
         "y",
@@ -700,36 +995,7 @@ def is_affirmative(text: str) -> bool:
         "हां बना दो",
         "हां कर दो",
     }
-    if normalized in phrase_matches:
-        return True
-
-    affirmative_tokens = (
-        "yes",
-        "confirm",
-        "confirmed",
-        "go ahead",
-        "create",
-        "do it",
-        "please do",
-        "okay",
-        "ok",
-        "sure",
-        "haan",
-        "han",
-        "ji haan",
-        "theek hai",
-        "thik hai",
-        "kar do",
-        "kardo",
-        "bana do",
-        "banado",
-        "हाँ",
-        "हां",
-        "ठीक है",
-        "कर दो",
-        "बना दो",
-    )
-    return any(token in normalized for token in affirmative_tokens)
+    return normalized in phrase_matches
 
 
 def is_negative(text: str) -> bool:
@@ -748,7 +1014,13 @@ def is_negative(text: str) -> bool:
         "mat karo",
         "cancel karo",
         "rehne do",
+        "don't do it",
+        "don't create",
+        "don't delete",
+        "do not create",
+        "do not delete",
         "नहीं",
+        "नही",
         "मत",
         "मत करो",
         "रद्द करो",
@@ -762,9 +1034,8 @@ def is_negative(text: str) -> bool:
         "no please",
         "please cancel",
         "cancel it",
-        "don't create",
-        "do not create",
         "not now please",
+        "I don't want to",
         "नहीं रद्द करो",
         "नहीं मत करो",
         "रद्द कर दो",
@@ -772,25 +1043,23 @@ def is_negative(text: str) -> bool:
     if normalized in phrase_matches:
         return True
 
-    negative_tokens = (
+    # Check for negation words — these must come before any affirmative substring check
+    negation_markers = (
         "no",
-        "cancel",
-        "stop",
         "don't",
         "do not",
-        "not now",
+        "not ",
+        "cancel",
+        "stop",
         "nahi",
         "mat",
-        "mat karo",
-        "cancel karo",
-        "rehne do",
         "नहीं",
         "नही",
         "मत",
         "रद्द",
         "रहने दो",
     )
-    return any(token in normalized for token in negative_tokens)
+    return any(marker in normalized for marker in negation_markers)
 
 
 def format_confirmed_action_result(result: dict[str, Any]) -> str:
@@ -800,8 +1069,13 @@ def format_confirmed_action_result(result: dict[str, Any]) -> str:
     if result.get("invoice_name"):
         return (
             f"Sales Invoice {result['invoice_name']} created for {result.get('customer')}. "
-            f"Grand total: {result.get('grand_total')}. "
-            "Would you like me to open it in ERPNext?"
+            f"Grand total: ₹{result.get('grand_total')}."
+        )
+
+    if result.get("payment_name"):
+        return (
+            f"Payment of ₹{result.get('amount')} recorded against invoice {result.get('invoice_name')}. "
+            f"Remaining outstanding: ₹{result.get('outstanding_after', 0)}."
         )
 
     if result.get("message"):

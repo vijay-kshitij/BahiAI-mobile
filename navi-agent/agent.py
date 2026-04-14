@@ -1,6 +1,6 @@
 """
 Navi AI Agent
-Terminal chat client for the Navi ERPNext copilot demo.
+Terminal chat client for the Navi ERPNext copilot.
 """
 
 import os

@@ -1,10 +1,10 @@
 """
 ERPNext API Client
 Handles authentication and all API calls to ERPNext.
-This is what your AI agent uses to actually DO things in ERPNext.
 """
 
 import json
+from urllib.parse import quote
 
 import requests
 
@@ -25,77 +25,59 @@ class ERPNextClient:
         )
         if response.status_code != 200:
             raise Exception(f"Failed to login to ERPNext: {response.text}")
-        print("✅ Connected to ERPNext")
+        print("Connected to ERPNext")
 
-    def get_list(self, doctype, filters=None, fields=None, limit=20):
-        """
-        List documents of a given type.
-        Example: get_list("Customer") returns all customers
-        """
+    def _resource_url(self, doctype, name=None):
+        """Build a properly encoded resource URL."""
+        url = f"{self.base_url}/api/resource/{quote(doctype, safe='')}"
+        if name:
+            url += f"/{quote(str(name), safe='')}"
+        return url
+
+    def get_list(self, doctype, filters=None, fields=None, limit=20, order_by=None):
+        """List documents of a given type."""
         params = {"limit_page_length": limit}
         if filters:
             params["filters"] = json.dumps(filters)
         if fields:
             params["fields"] = json.dumps(fields)
+        if order_by:
+            params["order_by"] = order_by
 
-        response = self.session.get(
-            f"{self.base_url}/api/resource/{doctype}",
-            params=params,
-        )
+        response = self.session.get(self._resource_url(doctype), params=params)
         response.raise_for_status()
         return response.json().get("data", [])
 
     def get_document(self, doctype, name):
-        """
-        Get a specific document by name.
-        Example: get_document("Customer", "Rajesh Sharma")
-        """
-        response = self.session.get(
-            f"{self.base_url}/api/resource/{doctype}/{name}",
-        )
+        """Get a specific document by name."""
+        response = self.session.get(self._resource_url(doctype, name))
         response.raise_for_status()
         return response.json().get("data", {})
 
     def create_document(self, doctype, data):
-        """
-        Create a new document.
-        Example: create_document("Customer", {"customer_name": "Rajesh Sharma", ...})
-        """
-        response = self.session.post(
-            f"{self.base_url}/api/resource/{doctype}",
-            json=data,
-        )
+        """Create a new document."""
+        response = self.session.post(self._resource_url(doctype), json=data)
         response.raise_for_status()
         return response.json().get("data", {})
 
     def update_document(self, doctype, name, data):
-        """
-        Update an existing document.
-        Example: update_document("Customer", "Rajesh Sharma", {"customer_group": "Commercial"})
-        """
-        response = self.session.put(
-            f"{self.base_url}/api/resource/{doctype}/{name}",
-            json=data,
-        )
+        """Update an existing document."""
+        response = self.session.put(self._resource_url(doctype, name), json=data)
         response.raise_for_status()
         return response.json().get("data", {})
 
     def delete_document(self, doctype, name):
-        """
-        Delete a document.
-        Example: delete_document("Customer", "Rajesh Sharma")
-        """
-        response = self.session.delete(
-            f"{self.base_url}/api/resource/{doctype}/{name}",
-        )
+        """Delete a document."""
+        response = self.session.delete(self._resource_url(doctype, name))
         response.raise_for_status()
         return {"status": "success", "message": f"Deleted {doctype}: {name}"}
 
+    def submit_document(self, doctype, name):
+        """Submit a draft document (changes docstatus from 0 to 1)."""
+        return self.update_document(doctype, name, {"docstatus": 1})
+
     def search(self, doctype, query, fields=None, limit=10):
-        """
-        Search for documents.
-        Example: search("Customer", "Rajesh")
-        """
+        """Search for documents by partial name."""
         response = self.session.get(
             f"{self.base_url}/api/method/frappe.client.get_list",
             params={
@@ -107,43 +89,3 @@ class ERPNextClient:
         )
         response.raise_for_status()
         return response.json().get("message", [])
-
-    def get_stock_balance(self, item_code, warehouse=None, limit=20):
-        """Return stock balances from Bin for a given item code."""
-        filters = [["item_code", "=", item_code]]
-        if warehouse:
-            filters.append(["warehouse", "=", warehouse])
-
-        return self.get_list(
-            "Bin",
-            filters=filters,
-            fields=[
-                "item_code",
-                "warehouse",
-                "actual_qty",
-                "projected_qty",
-                "reserved_qty",
-                "ordered_qty",
-                "planned_qty",
-            ],
-            limit=limit,
-        )
-
-    def get_low_stock_items(self, threshold=10, warehouse=None, limit=20):
-        """Return bins at or below a threshold."""
-        filters = [["actual_qty", "<=", threshold]]
-        if warehouse:
-            filters.append(["warehouse", "=", warehouse])
-
-        return self.get_list(
-            "Bin",
-            filters=filters,
-            fields=[
-                "item_code",
-                "warehouse",
-                "actual_qty",
-                "projected_qty",
-                "ordered_qty",
-            ],
-            limit=limit,
-        )

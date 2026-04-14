@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#1a1a2e">
+    <title>Customer — Navi</title>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            font-family: 'DM Sans', -apple-system, sans-serif;
+            background: #f5f5f7;
+            color: #1e293b;
+            -webkit-font-smoothing: antialiased;
+        }
+        .page {
+            max-width: 480px;
+            margin: 0 auto;
+            min-height: 100vh;
+            background: #ffffff;
+        }
+        .topbar {
+            padding: 12px 16px;
+            padding-top: max(12px, env(safe-area-inset-top));
+            background: #1a1a2e;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .back-btn {
+            width: 32px; height: 32px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.15);
+            background: rgba(255,255,255,0.08);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            text-decoration: none;
+        }
+        .back-btn svg { width: 16px; height: 16px; fill: white; }
+        .topbar-title { color: white; font-size: 15px; font-weight: 600; }
+
+        .loading { text-align: center; padding: 60px 20px; color: #94a3b8; font-size: 14px; }
+        .error { text-align: center; padding: 60px 20px; color: #ef4444; font-size: 14px; }
+
+        .customer-header {
+            padding: 24px 16px;
+            text-align: center;
+            border-bottom: 1px solid #f1f5f9;
+        }
+        .customer-avatar {
+            width: 56px; height: 56px;
+            border-radius: 999px;
+            background: linear-gradient(135deg, #1a1a2e, #31456a);
+            color: white;
+            font-size: 22px;
+            font-weight: 700;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 10px;
+        }
+        .customer-name { font-size: 20px; font-weight: 700; color: #1a1a2e; }
+        .customer-type { font-size: 12px; color: #94a3b8; margin-top: 2px; }
+
+        .outstanding-box {
+            margin: 16px;
+            padding: 16px;
+            border-radius: 12px;
+            background: #fef3c7;
+            border: 1px solid #fde68a;
+            text-align: center;
+        }
+        .outstanding-box.zero {
+            background: #d1fae5;
+            border-color: #a7f3d0;
+        }
+        .outstanding-label { font-size: 12px; font-weight: 500; color: #92400e; }
+        .outstanding-box.zero .outstanding-label { color: #065f46; }
+        .outstanding-amount { font-size: 28px; font-weight: 700; color: #92400e; margin-top: 4px; }
+        .outstanding-box.zero .outstanding-amount { color: #065f46; }
+
+        .section {
+            padding: 16px;
+            border-bottom: 1px solid #f1f5f9;
+        }
+        .section-title {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #94a3b8;
+            margin-bottom: 10px;
+        }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            font-size: 14px;
+        }
+        .info-row .label { color: #64748b; }
+        .info-row .value { font-weight: 500; color: #1e293b; }
+
+        .invoice-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid #f8fafc;
+            text-decoration: none;
+            color: inherit;
+        }
+        .invoice-item:last-child { border-bottom: none; }
+        .invoice-item-left { flex: 1; min-width: 0; }
+        .invoice-item-id { font-size: 13px; font-weight: 600; color: #1a1a2e; }
+        .invoice-item-date { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+        .invoice-item-right { text-align: right; flex-shrink: 0; margin-left: 12px; }
+        .invoice-item-amount { font-size: 14px; font-weight: 700; color: #1a1a2e; }
+
+        .status-pill {
+            display: inline-block;
+            font-size: 10px; font-weight: 600;
+            padding: 2px 8px; border-radius: 999px;
+            margin-top: 3px;
+        }
+        .status-unpaid { background: #fef3c7; color: #92400e; }
+        .status-paid { background: #d1fae5; color: #065f46; }
+        .status-overdue { background: #fee2e2; color: #991b1b; }
+        .status-draft { background: #e2e8f0; color: #475569; }
+        .status-partly-paid { background: #dbeafe; color: #1e40af; }
+
+        .empty-invoices { padding: 24px 0; text-align: center; color: #94a3b8; font-size: 13px; }
+
+        @media (min-width: 481px) {
+            body { background: #e5e7eb; }
+            .page { border-left: 1px solid #d1d5db; border-right: 1px solid #d1d5db; }
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <div class="topbar">
+            <a class="back-btn" href="/" aria-label="Back">
+                <svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+            </a>
+            <span class="topbar-title">Customer</span>
+        </div>
+        <div id="content">
+            <div class="loading">Loading customer...</div>
+        </div>
+    </div>
+    <script>
+    (function () {
+        var name = decodeURIComponent(window.location.pathname.split("/").pop());
+        var contentEl = document.getElementById("content");
+
+        function esc(t) { var d = document.createElement("div"); d.textContent = t; return d.innerHTML; }
+
+        function statusClass(s) {
+            if (!s) return "status-draft";
+            s = s.toLowerCase();
+            if (s === "paid") return "status-paid";
+            if (s === "unpaid") return "status-unpaid";
+            if (s === "overdue") return "status-overdue";
+            if (s.indexOf("partly") >= 0) return "status-partly-paid";
+            return "status-draft";
+        }
+
+        fetch("/api/customer/" + encodeURIComponent(name))
+            .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+            .then(function (cust) {
+                var initial = (cust.customer_name || "?").charAt(0).toUpperCase();
+                var outstanding = parseFloat(cust.total_outstanding || 0);
+                var invoices = cust.invoices || [];
+
+                var invoicesHtml = invoices.length
+                    ? invoices.map(function (inv) {
+                        return '<a class="invoice-item" href="/invoice/' + encodeURIComponent(inv.name) + '">' +
+                            '<div class="invoice-item-left">' +
+                                '<div class="invoice-item-id">' + esc(inv.name) + '</div>' +
+                                '<div class="invoice-item-date">' + esc(inv.posting_date || "") + '</div>' +
+                            '</div>' +
+                            '<div class="invoice-item-right">' +
+                                '<div class="invoice-item-amount">' + esc("\u20B9" + (inv.grand_total || 0)) + '</div>' +
+                                '<div class="status-pill ' + statusClass(inv.status) + '">' + esc(inv.status || "Draft") + '</div>' +
+                            '</div>' +
+                        '</a>';
+                    }).join("")
+                    : '<div class="empty-invoices">No invoices yet.</div>';
+
+                var html =
+                    '<div class="customer-header">' +
+                        '<div class="customer-avatar">' + esc(initial) + '</div>' +
+                        '<div class="customer-name">' + esc(cust.customer_name || cust.name) + '</div>' +
+                        '<div class="customer-type">' + esc(cust.customer_type || "Individual") + '</div>' +
+                    '</div>' +
+
+                    '<div class="outstanding-box' + (outstanding <= 0 ? ' zero' : '') + '">' +
+                        '<div class="outstanding-label">' + (outstanding > 0 ? 'Total Outstanding' : 'No Outstanding Balance') + '</div>' +
+                        '<div class="outstanding-amount">' + esc("\u20B9" + outstanding) + '</div>' +
+                    '</div>' +
+
+                    '<div class="section">' +
+                        '<div class="section-title">Details</div>' +
+                        (cust.email ? '<div class="info-row"><span class="label">Email</span><span class="value">' + esc(cust.email) + '</span></div>' : '') +
+                        (cust.phone ? '<div class="info-row"><span class="label">Phone</span><span class="value">' + esc(cust.phone) + '</span></div>' : '') +
+                        '<div class="info-row"><span class="label">Territory</span><span class="value">' + esc(cust.territory || "-") + '</span></div>' +
+                    '</div>' +
+
+                    '<div class="section">' +
+                        '<div class="section-title">Invoices (' + invoices.length + ')</div>' +
+                        invoicesHtml +
+                    '</div>';
+
+                contentEl.innerHTML = html;
+            })
+            .catch(function (err) {
+                contentEl.innerHTML = '<div class="error">Could not load customer. ' + esc(String(err)) + '</div>';
+            });
+    })();
+    </script>
+</body>
+</html>

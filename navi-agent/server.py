@@ -1,21 +1,21 @@
 """
 Navi Server
 A FastAPI backend that serves the AI agent via HTTP API.
-The chat widget talks to this server, which talks to Claude and ERPNext.
+The chat UI talks to this server, which talks to Claude and ERPNext.
 """
 
 import os
 import re
 import uuid
-from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote
 
 import anthropic
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from erpnext_client import ERPNextClient
@@ -24,11 +24,11 @@ from navi_core import (
     SYSTEM_PROMPT,
     TOOLS,
     execute_tool,
-    extract_actions_from_result,
     format_confirmed_action_result,
     is_affirmative,
     is_negative,
     json_result,
+    normalize_phone,
 )
 
 load_dotenv()
@@ -38,7 +38,6 @@ app = FastAPI(title="Navi AI Agent API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -54,8 +53,6 @@ ELEVENLABS_BASE_URL = "https://api.elevenlabs.io/v1"
 DEFAULT_TTS_MODEL = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2")
 DEFAULT_EN_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID_EN", "21m00Tcm4TlvDq8ikWAM")
 DEFAULT_HI_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID_HI", DEFAULT_EN_VOICE_ID)
-PROXY_TIMEOUT = 60
-APP_BOOT_ID = uuid.uuid4().hex
 
 # In-memory conversation state for the MVP.
 conversations: dict[str, dict] = {}
@@ -84,6 +81,7 @@ def get_conversation_state(conversation_id: str) -> dict:
         conversations[conversation_id] = {
             "messages": [],
             "pending_action": None,
+            "pending_send": None,
             "language": "en-IN",
         }
     return conversations[conversation_id]
@@ -96,7 +94,7 @@ def build_system_prompt(language: str) -> str:
     date_context = (
         f"\nToday's date is {today}. Always resolve relative date references like "
         "'yesterday', 'last week', 'this month' into actual YYYY-MM-DD values before "
-        "using them in tool calls or navigate_to_page paths."
+        "using them in tool calls."
     )
     if normalized.startswith("hi"):
         return (
@@ -111,7 +109,7 @@ def build_system_prompt(language: str) -> str:
     )
 
 
-def fallback_spoken_reply(reply: str, language: str) -> str:
+def fallback_spoken_reply(reply: str, _language: str) -> str:
     text = re.sub(r"\*\*(.*?)\*\*", r"\1", reply)
     text = re.sub(r"\b[A-Z]{2,}(?:-[A-Z]+)*-\d{4}-\d+\b", "", text)
     text = re.sub(r"\bSKU\d+\b", "", text)
@@ -153,12 +151,19 @@ def format_confirmed_action_result_for_language(result: dict, language: str) -> 
     if result.get("status") != "success":
         return result.get("error", "The action failed.")
 
-    if result.get("invoice_name"):
+    if result.get("invoice_name") and not result.get("payment_name"):
         if is_hindi:
             return (
                 f"{result.get('customer')} के लिए Sales Invoice {result['invoice_name']} बना दिया गया है। "
-                f"कुल राशि {result.get('grand_total')} है। "
-                "क्या आप चाहते हैं कि मैं इसे ERPNext में खोल दूँ?"
+                f"कुल राशि ₹{result.get('grand_total')} है।"
+            )
+        return format_confirmed_action_result(result)
+
+    if result.get("payment_name"):
+        if is_hindi:
+            return (
+                f"Invoice {result.get('invoice_name')} के विरुद्ध ₹{result.get('amount')} का भुगतान दर्ज हो गया। "
+                f"शेष बकाया: ₹{result.get('outstanding_after', 0)}।"
             )
         return format_confirmed_action_result(result)
 
@@ -190,14 +195,63 @@ def handle_pending_action(state: dict, user_message: str) -> tuple[str | None, s
     if is_affirmative(user_message):
         confirmed_input = dict(pending_action["tool_input"])
         confirmed_input["confirmed"] = True
-        result = execute_tool(pending_action["tool_name"], confirmed_input, erp_client)
+        tool_name = pending_action["tool_name"]
+        result = execute_tool(tool_name, confirmed_input, erp_client)
         state["pending_action"] = None
 
-        reply = format_confirmed_action_result_for_language(result, language)
+        actions = extract_card_actions(result)
+
+        # After a successful Sales Invoice create, immediately try to send it on
+        # WhatsApp so the user sees a Send button right away — no extra question.
+        if (
+            tool_name == "create_sales_invoice"
+            and result.get("status") == "success"
+            and result.get("invoice_name")
+        ):
+            send_result = execute_tool(
+                "send_invoice",
+                {"invoice_name": result["invoice_name"]},
+                erp_client,
+            )
+            if send_result.get("status") == "success":
+                actions.extend(extract_card_actions(send_result))
+                state["pending_send"] = None
+                customer = result.get("customer", "")
+                reply = (
+                    (
+                        f"Invoice {result['invoice_name']} बन गया है। "
+                        f"{customer} को WhatsApp पर भेजने के लिए नीचे का बटन दबाएँ।"
+                    )
+                    if is_hindi
+                    else (
+                        f"Invoice {result['invoice_name']} created for {customer} — "
+                        f"₹{result.get('grand_total')}. Tap the Send on WhatsApp button below."
+                    )
+                )
+            else:
+                # Usually: no phone number on file. Arm pending_send so the next
+                # message that looks like a phone number is routed to send_invoice
+                # directly — the LLM tends to misread bare digits as a confirmation.
+                state["pending_send"] = {"invoice_name": result["invoice_name"]}
+                customer = result.get("customer", "")
+                reply = (
+                    (
+                        f"Invoice {result['invoice_name']} बन गया है। "
+                        f"WhatsApp पर भेजने के लिए {customer} का नंबर चाहिए। क्या आप शेयर कर सकते हैं?"
+                    )
+                    if is_hindi
+                    else (
+                        f"Invoice {result['invoice_name']} created. "
+                        f"I don't have {customer}'s WhatsApp number — what is it (with country code)?"
+                    )
+                )
+        else:
+            reply = format_confirmed_action_result_for_language(result, language)
+
         spoken_reply = generate_spoken_reply(reply, language)
         state["messages"].append({"role": "user", "content": user_message})
         state["messages"].append({"role": "assistant", "content": reply})
-        return reply, spoken_reply, extract_actions_from_result(result)
+        return reply, spoken_reply, actions
 
     if is_negative(user_message):
         state["pending_action"] = None
@@ -218,85 +272,109 @@ def handle_pending_action(state: dict, user_message: str) -> tuple[str | None, s
     return reply, spoken_reply, []
 
 
-def normalize_navigation_actions(actions: list, user_message: str) -> list:
-    if not actions:
+def handle_pending_send(state: dict, user_message: str) -> tuple[str | None, str | None, list]:
+    """If we're waiting for a phone number, route a phone-like reply directly
+    to send_invoice. The LLM tends to misread bare digits (e.g. "9123456789")
+    as a confirmation to re-create the invoice, so we intercept server-side."""
+    pending = state.get("pending_send")
+    if not pending:
+        return None, None, []
+
+    phone = normalize_phone(user_message)
+    language = state.get("language", "en-IN")
+    is_hindi = language.lower().startswith("hi")
+
+    if not phone:
+        # Not a phone number — let the LLM handle whatever the user said.
+        # Don't clear pending_send; they may provide the number next turn.
+        return None, None, []
+
+    invoice_name = pending["invoice_name"]
+    result = execute_tool(
+        "send_invoice",
+        {"invoice_name": invoice_name, "phone": phone},
+        erp_client,
+    )
+    state["pending_send"] = None
+
+    if result.get("status") == "success":
+        actions = extract_card_actions(result)
+        customer = result.get("customer", "")
+        reply = (
+            f"{customer} को WhatsApp पर भेजने के लिए नीचे का बटन दबाएँ।"
+            if is_hindi
+            else f"Ready to send to {customer} — tap the button below."
+        )
+    else:
+        actions = []
+        reply = result.get("error") or (
+            "WhatsApp भेजने में दिक्कत हुई।" if is_hindi else "Couldn't send the invoice."
+        )
+
+    spoken_reply = reply
+    state["messages"].append({"role": "user", "content": user_message})
+    state["messages"].append({"role": "assistant", "content": reply})
+    return reply, spoken_reply, actions
+
+
+def extract_card_actions(result: dict) -> list:
+    """Extract structured card actions from a tool result for the UI."""
+    actions = []
+    if result.get("status") != "success":
         return actions
 
-    normalized = re.sub(r"\s+", " ", (user_message or "").strip().lower())
+    if (
+        result.get("invoice_name")
+        and not result.get("payment_name")
+        and result.get("action_type") != "send_invoice"
+    ):
+        actions.append({
+            "type": "invoice-card",
+            "data": {
+                "name": result.get("invoice_name"),
+                "customer": result.get("customer"),
+                "grand_total": result.get("grand_total"),
+                "outstanding_amount": result.get("outstanding_amount"),
+                "posting_date": result.get("posting_date"),
+                "due_date": result.get("due_date"),
+                "status": result.get("invoice_status") or ("Unpaid" if result.get("outstanding_amount") else "Draft"),
+            },
+        })
 
-    def strip_query(path: str) -> str:
-        return path.split("?", 1)[0]
+    if result.get("payment_name"):
+        actions.append({
+            "type": "payment-card",
+            "data": {
+                "payment_name": result.get("payment_name"),
+                "invoice_name": result.get("invoice_name"),
+                "customer": result.get("customer"),
+                "amount": result.get("amount"),
+                "mode_of_payment": result.get("mode_of_payment"),
+                "outstanding_after": result.get("outstanding_after"),
+            },
+        })
 
-    def is_plain_customer_list_request() -> bool:
-        if "customer" not in normalized:
-            return False
-        if not any(token in normalized for token in {"all", "list", "show me", "open", "take me to", "go to"}):
-            return False
-        filtered_terms = {
-            "today",
-            "yesterday",
-            "this week",
-            "this month",
-            "created",
-            "creation",
-            "recent",
-            "latest",
-            "new",
-            "named",
-            "called",
-            "with ",
-            "from ",
-            "before ",
-            "after ",
-        }
-        return not any(term in normalized for term in filtered_terms)
+    if result.get("action") == "navigate" and result.get("path"):
+        actions.append({
+            "type": "navigate",
+            "path": result["path"],
+            "description": result.get("description", ""),
+        })
 
-    def is_plain_sales_invoice_list_request() -> bool:
-        if "invoice" not in normalized:
-            return False
-        if not any(token in normalized for token in {"all", "list", "show me", "open", "take me to", "go to"}):
-            return False
-        filtered_terms = {
-            "today",
-            "yesterday",
-            "this week",
-            "this month",
-            "unpaid",
-            "overdue",
-            "paid",
-            "draft",
-            "recent",
-            "latest",
-            "customer",
-            "from ",
-            "before ",
-            "after ",
-            "between ",
-            "status",
-            "due",
-        }
-        return not any(term in normalized for term in filtered_terms)
+    if result.get("action_type") == "send_invoice":
+        invoice_name = result.get("invoice_name")
+        actions.append({
+            "type": "send-invoice",
+            "data": {
+                "invoice_name": invoice_name,
+                "customer": result.get("customer") or "",
+                "phone": result.get("phone"),
+                "grand_total": result.get("grand_total") or 0,
+                "preview_path": f"/invoice/{quote(invoice_name, safe='')}",
+            },
+        })
 
-    normalized_actions = []
-    for action in actions:
-        if action.get("type") != "navigate" or not action.get("path"):
-            normalized_actions.append(action)
-            continue
-
-        path = action["path"]
-        if path.startswith("/app/customer") and is_plain_customer_list_request():
-            action = {**action, "path": "/app/customer"}
-        elif path.startswith("/app/sales-invoice") and is_plain_sales_invoice_list_request():
-            action = {**action, "path": "/app/sales-invoice"}
-        elif "?" in path and (
-            (path.startswith("/app/customer") and "all" in normalized)
-            or (path.startswith("/app/sales-invoice") and "all" in normalized)
-        ):
-            action = {**action, "path": strip_query(path)}
-
-        normalized_actions.append(action)
-
-    return normalized_actions
+    return actions
 
 
 def get_tts_config(language: str) -> tuple[str, str]:
@@ -306,90 +384,9 @@ def get_tts_config(language: str) -> tuple[str, str]:
     return DEFAULT_EN_VOICE_ID, "en"
 
 
-def should_inject_widget(content_type: str, body: bytes) -> bool:
-    if "text/html" not in (content_type or ""):
-        return False
-    return b"</body>" in body and b'id="navi-widget-container"' not in body
-
-
-def inject_widget_script(body: bytes, request: Request) -> bytes:
-    script = f"""
-<script
-  src="/widget.js?v={APP_BOOT_ID}"
-  data-server="{request.base_url.scheme}://{request.base_url.netloc}"
-  data-erpnext-origin="{request.base_url.scheme}://{request.base_url.netloc}"
-  data-boot-id="{APP_BOOT_ID}"
-  data-title="Navi"></script>
-</body>
-""".encode("utf-8")
-    return body.replace(b"</body>", script, 1)
-
-
-def rewrite_location_header(location: str, request: Request) -> str:
-    if not location:
-        return location
-
-    upstream_origin = erp_client.base_url.rstrip("/")
-    proxy_origin = f"{request.base_url.scheme}://{request.base_url.netloc}"
-    if location.startswith(upstream_origin):
-        return location.replace(upstream_origin, proxy_origin, 1)
-    return location
-
-
-def filtered_headers(headers) -> dict:
-    excluded = {
-        "host",
-        "content-length",
-        "content-encoding",
-        "connection",
-        "transfer-encoding",
-    }
-    return {key: value for key, value in headers.items() if key.lower() not in excluded}
-
-
-def proxy_to_erpnext(request: Request, path: str) -> Response:
-    upstream_url = urljoin(f"{erp_client.base_url}/", path.lstrip("/"))
-
-    try:
-        upstream_response = requests.request(
-            method=request.method,
-            url=upstream_url,
-            headers=filtered_headers(request.headers),
-            params=request.query_params,
-            data=request._body if hasattr(request, "_body") else None,
-            cookies=request.cookies,
-            allow_redirects=False,
-            timeout=PROXY_TIMEOUT,
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"ERPNext proxy request failed: {exc}") from exc
-
-    response_headers = {}
-    for key, value in upstream_response.headers.items():
-        lowered = key.lower()
-        if lowered in {"content-length", "content-encoding", "transfer-encoding", "connection"}:
-            continue
-        if lowered == "location":
-            response_headers[key] = rewrite_location_header(value, request)
-        else:
-            response_headers[key] = value
-
-    body = upstream_response.content
-    content_type = upstream_response.headers.get("Content-Type", "")
-    if should_inject_widget(content_type, body):
-        body = inject_widget_script(body, request)
-
-    return Response(
-        content=body,
-        status_code=upstream_response.status_code,
-        media_type=None,
-        headers=response_headers,
-    )
-
-
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Main chat endpoint for the widget and demo client."""
+    """Main chat endpoint."""
 
     conversation_id = request.conversation_id or str(uuid.uuid4())
     state = get_conversation_state(conversation_id)
@@ -401,11 +398,19 @@ async def chat(request: ChatRequest):
             reply=pending_reply,
             spoken_reply=pending_spoken_reply or pending_reply,
             conversation_id=conversation_id,
-            actions=normalize_navigation_actions(pending_actions, request.message),
+            actions=pending_actions,
+        )
+
+    send_reply, send_spoken_reply, send_actions = handle_pending_send(state, request.message)
+    if send_reply is not None:
+        return ChatResponse(
+            reply=send_reply,
+            spoken_reply=send_spoken_reply or send_reply,
+            conversation_id=conversation_id,
+            actions=send_actions,
         )
 
     messages = state["messages"]
-    actions = []
 
     messages.append({"role": "user", "content": request.message})
 
@@ -416,6 +421,8 @@ async def chat(request: ChatRequest):
         tools=TOOLS,
         messages=messages,
     )
+
+    actions = []
 
     while response.stop_reason == "tool_use":
         messages.append({"role": "assistant", "content": response.content})
@@ -436,13 +443,11 @@ async def chat(request: ChatRequest):
 
             if result.get("status") == "confirmation_required":
                 state["pending_action"] = {
-                    "tool_name": block.name,
-                    "tool_input": block.input,
+                    "tool_name": result.get("tool_name", block.name),
+                    "tool_input": result.get("pending_input", block.input),
                 }
             else:
-                result_actions = extract_actions_from_result(result)
-                if result_actions:
-                    actions = result_actions
+                actions.extend(extract_card_actions(result))
 
         messages.append({"role": "user", "content": tool_results})
 
@@ -454,14 +459,14 @@ async def chat(request: ChatRequest):
             messages=messages,
         )
 
+    # Don't show cards if there's a pending confirmation
+    if state.get("pending_action"):
+        actions = []
+
     final_text = "".join(
         block.text for block in response.content if hasattr(block, "text")
     )
     spoken_reply = generate_spoken_reply(final_text, state["language"])
-
-    if state.get("pending_action"):
-        actions = []
-    actions = normalize_navigation_actions(actions, request.message)
 
     messages.append({"role": "assistant", "content": response.content})
     return ChatResponse(
@@ -525,53 +530,203 @@ async def text_to_speech(request: TTSRequest):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "navi-agent", "boot_id": APP_BOOT_ID}
+    return {"status": "ok", "service": "navi-agent"}
 
 
-@app.get("/widget.js")
-async def serve_widget():
-    return FileResponse(
-        "widget.js",
-        media_type="application/javascript",
-        headers={"Cache-Control": "no-store"},
+@app.get("/api/invoice/{name}/pdf")
+async def invoice_pdf(name: str):
+    """Proxy the ERPNext print PDF so it can be shared via a public URL."""
+    try:
+        pdf_response = erp_client.session.get(
+            f"{erp_client.base_url}/api/method/frappe.utils.print_format.download_pdf",
+            params={"doctype": "Sales Invoice", "name": name, "format": "Standard", "no_letterhead": 0},
+        )
+        pdf_response.raise_for_status()
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"PDF fetch failed: {exc}") from exc
+
+    return Response(
+        content=pdf_response.content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{name}.pdf"'},
     )
+
+
+@app.post("/api/invoice/{name}/mark-sent")
+async def mark_invoice_sent(name: str):
+    """Submit a Draft invoice (docstatus 0 → 1) after the user has dispatched it."""
+    try:
+        doc = erp_client.get_document("Sales Invoice", name)
+        if int(doc.get("docstatus", 0)) != 0:
+            return {"status": "already_submitted", "invoice_status": doc.get("status")}
+        erp_client.submit_document("Sales Invoice", name)
+        updated = erp_client.get_document("Sales Invoice", name)
+        return {
+            "status": "success",
+            "invoice_name": name,
+            "invoice_status": updated.get("status"),
+            "outstanding_amount": updated.get("outstanding_amount"),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/invoice/{name}")
+async def get_invoice(name: str):
+    """Fetch a single invoice with its items for the detail page."""
+    try:
+        doc = erp_client.get_document("Sales Invoice", name)
+        return {
+            "name": doc.get("name"),
+            "customer": doc.get("customer"),
+            "customer_name": doc.get("customer_name"),
+            "posting_date": doc.get("posting_date"),
+            "due_date": doc.get("due_date"),
+            "status": doc.get("status"),
+            "grand_total": doc.get("grand_total"),
+            "net_total": doc.get("net_total"),
+            "outstanding_amount": doc.get("outstanding_amount"),
+            "total_taxes_and_charges": doc.get("total_taxes_and_charges"),
+            "currency": doc.get("currency", "INR"),
+            "items": [
+                {
+                    "item_code": item.get("item_code"),
+                    "item_name": item.get("item_name"),
+                    "qty": item.get("qty"),
+                    "rate": item.get("rate"),
+                    "amount": item.get("amount"),
+                }
+                for item in doc.get("items", [])
+            ],
+            "payments": [
+                {
+                    "name": ref.get("reference_name"),
+                    "amount": ref.get("allocated_amount"),
+                }
+                for ref in doc.get("payment_schedule", [])
+            ] if doc.get("payment_schedule") else [],
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/invoices")
+async def list_invoices(status: str = None, customer: str = None, limit: int = 20):
+    """List invoices with optional filters for the list page."""
+    filters = []
+    if status:
+        if status.lower() == "unpaid":
+            filters.append(["outstanding_amount", ">", 0])
+        elif status.lower() == "overdue":
+            filters.append(["outstanding_amount", ">", 0])
+            filters.append(["due_date", "<", __import__("datetime").date.today().isoformat()])
+        elif status.lower() == "paid":
+            filters.append(["outstanding_amount", "=", 0])
+            filters.append(["docstatus", "=", 1])
+        else:
+            filters.append(["status", "=", status])
+    if customer:
+        filters.append(["customer", "like", f"%{customer}%"])
+
+    try:
+        data = erp_client.get_list(
+            "Sales Invoice",
+            filters=filters or None,
+            fields=[
+                "name", "customer", "status", "grand_total",
+                "outstanding_amount", "posting_date", "due_date",
+            ],
+            limit=limit,
+            order_by="creation desc",
+        )
+        return {"data": data}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/customer/{name}")
+async def get_customer(name: str):
+    """Fetch customer details and their invoices for the detail page."""
+    try:
+        doc = erp_client.get_document("Customer", name)
+        invoices = erp_client.get_list(
+            "Sales Invoice",
+            filters=[["customer", "=", name]],
+            fields=[
+                "name", "status", "grand_total",
+                "outstanding_amount", "posting_date", "due_date",
+            ],
+            limit=50,
+            order_by="creation desc",
+        )
+        total_outstanding = sum(
+            float(inv.get("outstanding_amount", 0)) for inv in invoices
+        )
+        return {
+            "name": doc.get("name"),
+            "customer_name": doc.get("customer_name"),
+            "customer_type": doc.get("customer_type"),
+            "email": doc.get("email_id"),
+            "phone": doc.get("mobile_no"),
+            "territory": doc.get("territory"),
+            "total_outstanding": total_outstanding,
+            "invoices": invoices,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/invoice/{name}")
+async def invoice_page(name: str):
+    """Serve the invoice detail page."""
+    return FileResponse("static/invoice.html", media_type="text/html")
+
+
+@app.get("/api/customers")
+async def list_customers(limit: int = 50):
+    """List customers with outstanding totals for the list page."""
+    try:
+        customers = erp_client.get_list(
+            "Customer",
+            fields=["name", "customer_name", "customer_type", "mobile_no"],
+            limit=limit,
+        )
+        # Fetch outstanding per customer
+        for cust in customers:
+            invoices = erp_client.get_list(
+                "Sales Invoice",
+                filters=[["customer", "=", cust["name"]], ["outstanding_amount", ">", 0]],
+                fields=["outstanding_amount"],
+                limit=100,
+            )
+            cust["total_outstanding"] = sum(float(inv.get("outstanding_amount", 0)) for inv in invoices)
+            cust["unpaid_count"] = len(invoices)
+        return {"data": customers}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/invoices")
+async def invoices_page():
+    """Serve the invoice list page."""
+    return FileResponse("static/invoices.html", media_type="text/html")
+
+
+@app.get("/customers")
+async def customers_page():
+    """Serve the customers list page."""
+    return FileResponse("static/customers.html", media_type="text/html")
+
+
+@app.get("/customer/{name}")
+async def customer_page(name: str):
+    """Serve the customer detail page."""
+    return FileResponse("static/customer.html", media_type="text/html")
 
 
 @app.get("/")
-async def root(request: Request):
-    html = Path("test.html").read_text(encoding="utf-8")
-    script_tag = (
-        f'<script src="/widget.js?v={APP_BOOT_ID}" data-server="{request.base_url.scheme}://{request.base_url.netloc}" '
-        f'data-erpnext-origin="{request.base_url.scheme}://{request.base_url.netloc}" '
-        f'data-boot-id="{APP_BOOT_ID}" data-title="Navi"></script>'
-    )
-    html = re.sub(
-        r'<script\s+src="/widget\.js"[^>]*></script>',
-        script_tag,
-        html,
-        count=1,
-    )
-    return Response(content=html, media_type="text/html")
+async def root():
+    return FileResponse("static/index.html", media_type="text/html")
 
 
-@app.api_route(
-    "/{full_path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
-)
-async def proxy_erpnext(request: Request, full_path: str):
-    """Proxy ERPNext so the widget can live on the same origin as Desk pages."""
-
-    protected_paths = {
-        "",
-        "widget.js",
-        "api/chat",
-        "api/tts",
-        "api/health",
-    }
-    # strip query string before checking (e.g. widget.js?v=abc123)
-    base_path = full_path.split("?")[0]
-    if base_path in protected_paths:
-        raise HTTPException(status_code=404, detail="Not Found")
-
-    request._body = await request.body()
-    return proxy_to_erpnext(request, full_path)
+app.mount("/static", StaticFiles(directory="static"), name="static")

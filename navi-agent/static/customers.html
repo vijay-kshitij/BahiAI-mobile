@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#1a1a2e">
+    <title>Customers — Navi</title>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            font-family: 'DM Sans', -apple-system, sans-serif;
+            background: #f5f5f7;
+            color: #1e293b;
+            -webkit-font-smoothing: antialiased;
+        }
+        .page {
+            max-width: 480px;
+            margin: 0 auto;
+            min-height: 100vh;
+            min-height: 100dvh;
+            background: #ffffff;
+            display: flex;
+            flex-direction: column;
+        }
+        .topbar {
+            padding: 12px 16px;
+            padding-top: max(12px, env(safe-area-inset-top));
+            background: #1a1a2e;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .back-btn {
+            width: 32px; height: 32px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.15);
+            background: rgba(255,255,255,0.08);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            text-decoration: none;
+        }
+        .back-btn svg { width: 16px; height: 16px; fill: white; }
+        .topbar-title { color: white; font-size: 15px; font-weight: 600; }
+
+        .loading { text-align: center; padding: 60px 20px; color: #94a3b8; font-size: 14px; }
+        .empty { text-align: center; padding: 60px 20px; color: #94a3b8; font-size: 14px; }
+
+        .customer-list { flex: 1; overflow-y: auto; }
+
+        .customer-item {
+            display: flex;
+            align-items: center;
+            padding: 14px 16px;
+            border-bottom: 1px solid #f8fafc;
+            text-decoration: none;
+            color: inherit;
+            gap: 12px;
+        }
+        .customer-item:active { background: #f8fafc; }
+
+        .customer-avatar {
+            width: 40px; height: 40px;
+            border-radius: 999px;
+            background: linear-gradient(135deg, #1a1a2e, #31456a);
+            color: white;
+            font-size: 16px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .customer-info { flex: 1; min-width: 0; }
+        .customer-name { font-size: 14px; font-weight: 600; color: #1a1a2e; }
+        .customer-meta { font-size: 12px; color: #94a3b8; margin-top: 2px; }
+
+        .customer-right { text-align: right; flex-shrink: 0; }
+        .customer-outstanding { font-size: 14px; font-weight: 700; color: #1a1a2e; }
+        .customer-outstanding.has-due { color: #dc2626; }
+        .customer-invoices { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+
+        /* ── Tab bar ── */
+        .tab-bar {
+            display: flex;
+            border-top: 1px solid #e5e7eb;
+            background: white;
+            flex-shrink: 0;
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+        .tab-bar a {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 2px;
+            padding: 10px 0 8px;
+            text-decoration: none;
+            color: #94a3b8;
+            font-size: 10px;
+            font-weight: 600;
+        }
+        .tab-bar a.active { color: #1a1a2e; }
+        .tab-bar a svg { width: 20px; height: 20px; fill: currentColor; }
+
+        @media (min-width: 481px) {
+            body { background: #e5e7eb; }
+            .page { border-left: 1px solid #d1d5db; border-right: 1px solid #d1d5db; }
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <div class="topbar">
+            <a class="back-btn" href="/" aria-label="Back">
+                <svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+            </a>
+            <span class="topbar-title">Customers</span>
+        </div>
+        <div id="content" class="customer-list">
+            <div class="loading">Loading customers...</div>
+        </div>
+        <div class="tab-bar">
+            <a href="/">
+                <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.2L4 17.2V4h16v12z"/></svg>
+                Chat
+            </a>
+            <a href="/invoices">
+                <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13zM6 20V4h5v7h7v9H6z"/></svg>
+                Invoices
+            </a>
+            <a href="/customers" class="active">
+                <svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+                Customers
+            </a>
+        </div>
+    </div>
+    <script>
+    (function () {
+        var contentEl = document.getElementById("content");
+
+        function esc(t) { var d = document.createElement("div"); d.textContent = t; return d.innerHTML; }
+
+        fetch("/api/customers")
+            .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+            .then(function (res) {
+                var data = res.data || [];
+                if (!data.length) {
+                    contentEl.innerHTML = '<div class="empty">No customers found.</div>';
+                    return;
+                }
+
+                contentEl.innerHTML = data.map(function (c) {
+                    var initial = (c.customer_name || "?").charAt(0).toUpperCase();
+                    var outstanding = parseFloat(c.total_outstanding || 0);
+                    var hasDue = outstanding > 0;
+
+                    return '<a class="customer-item" href="/customer/' + encodeURIComponent(c.name) + '">' +
+                        '<div class="customer-avatar">' + esc(initial) + '</div>' +
+                        '<div class="customer-info">' +
+                            '<div class="customer-name">' + esc(c.customer_name || c.name) + '</div>' +
+                            '<div class="customer-meta">' + esc(c.customer_type || "Individual") +
+                                (c.mobile_no ? ' &middot; ' + esc(c.mobile_no) : '') +
+                            '</div>' +
+                        '</div>' +
+                        '<div class="customer-right">' +
+                            '<div class="customer-outstanding' + (hasDue ? ' has-due' : '') + '">' +
+                                (hasDue ? esc("\u20B9" + outstanding) : '<span style="color:#16a34a">Clear</span>') +
+                            '</div>' +
+                            (c.unpaid_count > 0 ? '<div class="customer-invoices">' + c.unpaid_count + ' unpaid</div>' : '') +
+                        '</div>' +
+                    '</a>';
+                }).join("");
+            })
+            .catch(function () {
+                contentEl.innerHTML = '<div class="empty">Error loading customers.</div>';
+            });
+    })();
+    </script>
+</body>
+</html>
