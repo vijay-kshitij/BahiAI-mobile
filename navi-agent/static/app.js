@@ -10,7 +10,6 @@
     "List all customers",
   ];
   const LANGUAGES = { "en-IN": "English", "hi-IN": "Hindi" };
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const STORAGE_KEY = "navi_chat_state";
 
   // ── State ──
@@ -22,12 +21,17 @@
     ? persisted.selectedLanguage : "en-IN";
   let voiceEnabled = typeof persisted.voiceEnabled === "boolean" ? persisted.voiceEnabled : true;
   let chatTranscript = Array.isArray(persisted.chatTranscript) ? persisted.chatTranscript : [];
+  let pendingState = persisted.pendingState || null;
   let isLoading = false;
   let isListening = false;
-  let recognition = null;
+  let mediaRecorder = null;
+  let mediaStream = null;
+  let recordedChunks = [];
   let currentAudio = null;
   let currentAudioUrl = null;
   let abortController = null;
+  let audioUnlocked = false;
+  let audioContext = null;
 
   // ── Elements ──
   const messagesEl = document.getElementById("messages");
@@ -37,6 +41,10 @@
   const langSelect = document.getElementById("lang-select");
   const clearBtn = document.getElementById("clear-btn");
   const voiceToggle = document.getElementById("voice-toggle");
+  const pendingBannerEl = document.getElementById("pending-banner");
+  const pendingTextEl = document.getElementById("pending-banner-text");
+  const pendingConfirmBtn = document.getElementById("pending-confirm");
+  const pendingCancelBtn = document.getElementById("pending-cancel");
 
   // ── Persistence ──
   function save() {
@@ -46,8 +54,21 @@
         selectedLanguage: selectedLanguage,
         voiceEnabled: voiceEnabled,
         chatTranscript: chatTranscript.slice(-100),
+        pendingState: pendingState,
       }));
     } catch (_) {}
+  }
+
+  function setPending(pending) {
+    pendingState = pending || null;
+    if (pendingState && pendingState.summary) {
+      pendingTextEl.textContent = pendingState.summary;
+      pendingBannerEl.classList.add("visible");
+    } else {
+      pendingTextEl.textContent = "";
+      pendingBannerEl.classList.remove("visible");
+    }
+    save();
   }
 
   // ── HTML Escaping ──
@@ -320,9 +341,44 @@
   }
 
   // ── Audio ──
+  // iOS needs HTMLAudio elements to be .play()'d synchronously inside a user
+  // gesture at least once per session. We reuse the same element for all TTS
+  // playback so it stays "primed" across the async fetch/play gap.
+  var primedPlayer = null;
+  var SILENT_WAV = "data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBIAAAABAAEAQB8AAEAfAAABAAgAAABmYWN0BAAAAAAAAABkYXRhAAAAAA==";
+
+  function unlockAudio() {
+    if (audioUnlocked) return;
+    try {
+      if (!primedPlayer) {
+        primedPlayer = new Audio();
+        primedPlayer.preload = "auto";
+      }
+      primedPlayer.src = SILENT_WAV;
+      var p = primedPlayer.play();
+      if (p && typeof p.then === "function") {
+        p.then(function () { audioUnlocked = true; })
+         .catch(function (err) { console.warn("HTMLAudio unlock rejected:", err); });
+      } else {
+        audioUnlocked = true;
+      }
+
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      if (Ctx) {
+        audioContext = audioContext || new Ctx();
+        if (audioContext.state === "suspended") audioContext.resume().catch(function () {});
+      }
+    } catch (err) {
+      console.warn("Audio unlock failed:", err);
+    }
+  }
+
   function stopSpeaking() {
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
-    if (currentAudio) { currentAudio.pause(); currentAudio.currentTime = 0; currentAudio = null; }
+    if (currentAudio) {
+      try { currentAudio.pause(); currentAudio.currentTime = 0; } catch (_) {}
+      currentAudio = null;
+    }
     if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
   }
 
@@ -351,10 +407,17 @@
       var blob = await resp.blob();
       var url = URL.createObjectURL(blob);
       currentAudioUrl = url;
-      currentAudio = new Audio(url);
-      currentAudio.onended = function () { URL.revokeObjectURL(url); currentAudio = null; currentAudioUrl = null; };
-      currentAudio.onerror = function () { URL.revokeObjectURL(url); currentAudio = null; currentAudioUrl = null; speakBrowser(clean); };
-      await currentAudio.play();
+      if (!primedPlayer) primedPlayer = new Audio();
+      currentAudio = primedPlayer;
+      currentAudio.onended = function () { if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; } currentAudio = null; };
+      currentAudio.onerror = function () { if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; } currentAudio = null; speakBrowser(clean); };
+      currentAudio.src = url;
+      try {
+        await currentAudio.play();
+      } catch (playErr) {
+        console.warn("Audio play rejected:", playErr);
+        speakBrowser(clean);
+      }
     } catch (_) {
       speakBrowser(clean);
     }
@@ -366,39 +429,131 @@
     micBtn.setAttribute("aria-label", isListening ? "Stop listening" : "Voice input");
   }
 
-  function stopListening() {
-    if (!recognition || !isListening) return;
-    isListening = false;
-    updateMic();
-    recognition.stop();
+  function pickMimeType() {
+    if (typeof MediaRecorder === "undefined") return "";
+    var candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/aac", "audio/mpeg"];
+    for (var i = 0; i < candidates.length; i++) {
+      if (MediaRecorder.isTypeSupported(candidates[i])) return candidates[i];
+    }
+    return "";
   }
 
-  function startListening() {
-    if (!SpeechRecognition) { addSystem("Voice input not supported. Try Chrome or Edge."); return; }
+  function releaseStream() {
+    if (mediaStream) {
+      mediaStream.getTracks().forEach(function (t) { t.stop(); });
+      mediaStream = null;
+    }
+  }
+
+  function stopListening() {
+    if (!mediaRecorder || mediaRecorder.state === "inactive") {
+      isListening = false; updateMic();
+      return;
+    }
+    try { mediaRecorder.stop(); } catch (_) {}
+    isListening = false;
+    updateMic();
+  }
+
+  async function transcribeAndSend(blob) {
+    if (!blob || blob.size === 0) {
+      addSystem("Didn't catch that — try again.");
+      return;
+    }
+    addSystem("Transcribing...");
+    var form = new FormData();
+    var ext = (blob.type && blob.type.indexOf("mp4") >= 0) ? "mp4"
+            : (blob.type && blob.type.indexOf("mpeg") >= 0) ? "mp3"
+            : "webm";
+    form.append("file", blob, "voice." + ext);
+
+    try {
+      var resp = await fetch(SERVER_URL + "/api/voice/transcribe?language=" + encodeURIComponent(selectedLanguage), {
+        method: "POST",
+        body: form,
+      });
+      if (!resp.ok) {
+        var errText = await resp.text().catch(function () { return ""; });
+        throw new Error("Transcribe " + resp.status + " " + errText);
+      }
+      var data = await resp.json();
+      var text = (data.text || "").trim();
+      if (!text) { addSystem("Didn't catch that — try again."); return; }
+      inputEl.value = text;
+      sendMessage();
+    } catch (err) {
+      console.error("Transcribe failed:", err);
+      addSystem("Transcription failed. Check your connection or API key.");
+    }
+  }
+
+  async function startListening() {
     if (isLoading) return;
+    if (isListening) { stopListening(); return; }
 
-    if (!recognition) {
-      recognition = new SpeechRecognition();
-      recognition.interimResults = true;
-      recognition.continuous = false;
-
-      recognition.onstart = function () { isListening = true; updateMic(); addSystem(selectedLanguage === "hi-IN" ? "Listening..." : "Listening..."); };
-      recognition.onresult = function (e) {
-        var text = "";
-        for (var i = e.resultIndex; i < e.results.length; i++) text += e.results[i][0].transcript;
-        inputEl.value = text.trim();
-        if (e.results[e.results.length - 1].isFinal) sendMessage();
-      };
-      recognition.onerror = function (e) {
-        isListening = false; updateMic();
-        if (e.error !== "aborted") addSystem("Voice input failed.");
-      };
-      recognition.onend = function () { isListening = false; updateMic(); };
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      addSystem("Voice input not supported on this browser.");
+      return;
+    }
+    if (typeof MediaRecorder === "undefined") {
+      addSystem("Voice recording not supported on this browser.");
+      return;
     }
 
-    recognition.lang = selectedLanguage;
     stopSpeaking();
-    recognition.start();
+
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      console.error("getUserMedia failed:", err);
+      var msg = "Microphone access denied.";
+      if (err && err.name === "NotFoundError") msg = "No microphone found.";
+      else if (err && err.name === "NotAllowedError") msg = "Microphone permission denied — allow it in browser settings.";
+      else if (err && err.message) msg = "Mic error: " + err.message;
+      addSystem(msg);
+      return;
+    }
+
+    var mimeType = pickMimeType();
+    try {
+      mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType: mimeType })
+                               : new MediaRecorder(mediaStream);
+    } catch (err) {
+      console.error("MediaRecorder init failed:", err);
+      addSystem("Could not start recording: " + (err && err.message ? err.message : err));
+      releaseStream();
+      return;
+    }
+
+    recordedChunks = [];
+    mediaRecorder.ondataavailable = function (e) {
+      if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+    };
+    mediaRecorder.onstop = function () {
+      var type = mediaRecorder.mimeType || mimeType || "audio/webm";
+      var blob = new Blob(recordedChunks, { type: type });
+      recordedChunks = [];
+      releaseStream();
+      transcribeAndSend(blob);
+    };
+    mediaRecorder.onerror = function (e) {
+      console.error("MediaRecorder error:", e);
+      addSystem("Recording error.");
+      releaseStream();
+      isListening = false; updateMic();
+    };
+
+    try {
+      mediaRecorder.start();
+      isListening = true;
+      updateMic();
+      addSystem("Listening… tap the mic again to stop.");
+    } catch (err) {
+      console.error("mediaRecorder.start threw:", err);
+      addSystem("Couldn't start mic: " + (err && err.message ? err.message : err));
+      releaseStream();
+      isListening = false; updateMic();
+    }
   }
 
   // ── Send message ──
@@ -437,12 +592,15 @@
           if (action.type === "invoice-card") addInvoiceCard(action.data);
           else if (action.type === "payment-card") addPaymentCard(action.data);
           else if (action.type === "send-invoice") addSendInvoiceCard(action.data);
+          else if (action.type === "system") addSystem(action.text || "");
           else if (action.type === "navigate") {
             // Navigate after a short delay so the user sees the reply first
             setTimeout(function () { window.location.href = action.path; }, 800);
           }
         });
       }
+
+      setPending(data.pending || null);
 
       addMessage(data.reply, "bot");
       await speakReply(data.spoken_reply || data.reply);
@@ -467,19 +625,28 @@
     stopSpeaking();
     conversationId = null;
     chatTranscript = [];
+    setPending(null);
     messagesEl.innerHTML = renderWelcome();
     inputEl.value = "";
     save();
     inputEl.focus();
   }
 
+  function sendQuickReply(text) {
+    if (isLoading) return;
+    inputEl.value = text;
+    sendMessage();
+  }
+
   // ── Events ──
   sendBtn.addEventListener("click", function () {
+    unlockAudio();
     if (isLoading) { stopAgent(); return; }
     sendMessage();
   });
 
   micBtn.addEventListener("click", function () {
+    unlockAudio();
     if (isListening) { stopListening(); return; }
     startListening();
   });
@@ -488,7 +655,6 @@
     selectedLanguage = e.target.value;
     save();
     stopSpeaking();
-    if (isListening) { stopListening(); startListening(); }
   });
 
   voiceToggle.addEventListener("click", function () {
@@ -499,6 +665,16 @@
   });
 
   clearBtn.addEventListener("click", clearChat);
+
+  pendingConfirmBtn.addEventListener("click", function () {
+    unlockAudio();
+    sendQuickReply(selectedLanguage === "hi-IN" ? "haan kar do" : "yes, go ahead");
+  });
+
+  pendingCancelBtn.addEventListener("click", function () {
+    unlockAudio();
+    sendQuickReply(selectedLanguage === "hi-IN" ? "rehne do" : "cancel");
+  });
 
   inputEl.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
@@ -533,14 +709,17 @@
 
     var btn = e.target.closest(".suggestion");
     if (!btn || isLoading) return;
+    unlockAudio();
     inputEl.value = btn.getAttribute("data-suggestion");
     sendMessage();
   });
 
   // ── Init ──
-  micBtn.disabled = !SpeechRecognition;
+  var hasMic = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && typeof MediaRecorder !== "undefined";
+  micBtn.disabled = !hasMic;
   langSelect.value = selectedLanguage;
   voiceToggle.classList.toggle("muted", !voiceEnabled);
+  setPending(pendingState);
   renderTranscript();
   if ("speechSynthesis" in window) { window.speechSynthesis.getVoices(); }
 })();

@@ -74,7 +74,29 @@ class ERPNextClient:
 
     def submit_document(self, doctype, name):
         """Submit a draft document (changes docstatus from 0 to 1)."""
-        return self.update_document(doctype, name, {"docstatus": 1})
+        doc = self.get_document(doctype, name)
+        doc["docstatus"] = 1
+        if doc.get("posting_date"):
+            doc["set_posting_time"] = 1
+        response = self.session.post(
+            f"{self.base_url}/api/method/frappe.client.submit",
+            json={"doc": doc},
+        )
+        if not response.ok:
+            error_msg = response.text
+            try:
+                error_data = response.json()
+                server_messages = error_data.get("_server_messages")
+                if server_messages:
+                    import json as _json
+                    msgs = _json.loads(server_messages)
+                    if msgs:
+                        inner = _json.loads(msgs[0]) if isinstance(msgs[0], str) else msgs[0]
+                        error_msg = inner.get("message", error_msg)
+            except Exception:
+                pass
+            raise Exception(f"Submit failed: {error_msg}")
+        return response.json().get("data", response.json().get("message", {}))
 
     def search(self, doctype, query, fields=None, limit=10):
         """Search for documents by partial name."""

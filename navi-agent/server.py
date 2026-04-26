@@ -4,15 +4,19 @@ A FastAPI backend that serves the AI agent via HTTP API.
 The chat UI talks to this server, which talks to Claude and ERPNext.
 """
 
+import base64
+import logging
 import os
 import re
 import uuid
 from urllib.parse import quote
 
+log = logging.getLogger("navi.server")
+
 import anthropic
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -48,11 +52,11 @@ erp_client = ERPNextClient(
     password=os.getenv("ERPNEXT_PASSWORD", "admin"),
 )
 claude_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
-ELEVENLABS_BASE_URL = "https://api.elevenlabs.io/v1"
-DEFAULT_TTS_MODEL = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2")
-DEFAULT_EN_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID_EN", "21m00Tcm4TlvDq8ikWAM")
-DEFAULT_HI_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID_HI", DEFAULT_EN_VOICE_ID)
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
+SARVAM_BASE_URL = "https://api.sarvam.ai"
+SARVAM_TTS_MODEL = os.getenv("SARVAM_TTS_MODEL", "bulbul:v3")
+SARVAM_STT_MODEL = os.getenv("SARVAM_STT_MODEL", "saaras:v3")
+SARVAM_TTS_SPEAKER = os.getenv("SARVAM_TTS_SPEAKER", "shubh")
 
 # In-memory conversation state for the MVP.
 conversations: dict[str, dict] = {}
@@ -69,6 +73,7 @@ class ChatResponse(BaseModel):
     spoken_reply: str
     conversation_id: str
     actions: list = []
+    pending: dict | None = None
 
 
 class TTSRequest(BaseModel):
@@ -184,15 +189,158 @@ def format_confirmed_action_result_for_language(result: dict, language: str) -> 
     return format_confirmed_action_result(result)
 
 
-def handle_pending_action(state: dict, user_message: str) -> tuple[str | None, str | None, list]:
+def describe_pending_action(pending_action: dict) -> dict:
+    """Build a short, structured summary of a pending tool call for UI + classifier."""
+    tool_name = pending_action.get("tool_name", "")
+    tool_input = pending_action.get("tool_input", {}) or {}
+
+    if tool_name == "create_sales_invoice":
+        resolved_customer = tool_input.get("_resolved_customer")
+        if isinstance(resolved_customer, dict):
+            customer = (
+                resolved_customer.get("customer_name")
+                or resolved_customer.get("name")
+                or tool_input.get("customer", "")
+            )
+        elif isinstance(resolved_customer, str) and resolved_customer:
+            customer = resolved_customer
+        else:
+            customer = tool_input.get("customer", "")
+        items = tool_input.get("_resolved_items") or tool_input.get("items") or []
+        total = 0.0
+        for it in items:
+            try:
+                total += float(it.get("rate", 0) or 0) * float(it.get("qty", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+        return {
+            "kind": "create_sales_invoice",
+            "customer": customer,
+            "total": total,
+            "summary_en": f"Unconfirmed invoice for {customer} — \u20B9{total:,.0f}",
+            "summary_hi": f"{customer} के लिए बिना पुष्टि वाली Invoice — \u20B9{total:,.0f}",
+        }
+
+    if tool_name == "record_payment":
+        return {
+            "kind": "record_payment",
+            "summary_en": f"Unconfirmed payment for {tool_input.get('invoice_name', '')}",
+            "summary_hi": f"{tool_input.get('invoice_name', '')} के लिए बिना पुष्टि वाला payment",
+        }
+
+    if tool_name == "delete_document":
+        return {
+            "kind": "delete_document",
+            "summary_en": f"Unconfirmed deletion of {tool_input.get('name', '')}",
+            "summary_hi": f"{tool_input.get('name', '')} के deletion की पुष्टि बाक़ी",
+        }
+
+    return {
+        "kind": tool_name,
+        "summary_en": f"Unconfirmed {tool_name}",
+        "summary_hi": f"बिना पुष्टि वाला {tool_name}",
+    }
+
+
+def make_pending_payload(state: dict) -> dict | None:
+    """The compact pending descriptor sent to the frontend for the badge."""
     pending_action = state.get("pending_action")
     if not pending_action:
-        return None, None, []
+        return None
+    desc = describe_pending_action(pending_action)
+    is_hindi = (state.get("language") or "").lower().startswith("hi")
+    return {
+        "kind": desc.get("kind"),
+        "summary": desc.get("summary_hi" if is_hindi else "summary_en"),
+    }
+
+
+def classify_pending_intent(user_message: str, pending_action: dict, language: str) -> str:
+    """Use Claude to decide whether the user's reply confirms, cancels,
+    is unrelated, or needs clarification on a pending action.
+    Falls back to the regex helpers if the LLM call fails."""
+    desc = describe_pending_action(pending_action)
+    summary = desc.get("summary_en", "")
+    prompt = (
+        f"There is a pending action awaiting the user's confirmation:\n"
+        f"  {summary}\n\n"
+        f"The user just replied:\n"
+        f'  "{user_message}"\n\n'
+        f"Classify the reply as exactly ONE of:\n"
+        f"- confirm: the user agrees and wants to proceed (e.g. 'yes', 'go ahead', "
+        f"'do it', 'haan kar do', 'he has created', 'create karo', 'sure')\n"
+        f"- cancel: the user wants to abandon the pending action ('no', 'cancel', 'rehne do')\n"
+        f"- unrelated: the user is asking about a completely different task "
+        f"('show me invoices', 'list customers', 'what's my balance')\n"
+        f"- clarify: the user is asking a question about the pending action itself, "
+        f"or expressing uncertainty ('have you done it already?', 'wait', 'what was the total?')\n\n"
+        f"Reply with ONLY one word: confirm, cancel, unrelated, or clarify."
+    )
+
+    try:
+        resp = claude_client.messages.create(
+            model=MODEL_NAME,
+            max_tokens=10,
+            system="You are a strict classifier. Output exactly one of: confirm, cancel, unrelated, clarify.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = "".join(b.text for b in resp.content if hasattr(b, "text")).strip().lower()
+        for option in ("confirm", "cancel", "unrelated", "clarify"):
+            if option in raw:
+                return option
+        return "clarify"
+    except Exception as exc:
+        log.warning("Pending intent classifier failed: %s", exc)
+        if is_affirmative(user_message):
+            return "confirm"
+        if is_negative(user_message):
+            return "cancel"
+        return "clarify"
+
+
+def handle_pending_action(state: dict, user_message: str) -> tuple[str | None, str | None, list] | None:
+    """Returns (reply, spoken_reply, actions) when the message was handled by the
+    pending flow. Returns None when the main LLM should run instead — either
+    because there's no pending action, or because the user shifted intent and
+    we released the lock. In the release case, we inject a system notice via
+    state['transient_actions']."""
+    pending_action = state.get("pending_action")
+    if not pending_action:
+        return None
 
     language = state.get("language", "en-IN")
     is_hindi = language.lower().startswith("hi")
 
-    if is_affirmative(user_message):
+    intent = classify_pending_intent(user_message, pending_action, language)
+
+    if intent == "unrelated":
+        desc = describe_pending_action(pending_action)
+        summary = desc.get("summary_hi" if is_hindi else "summary_en")
+        notice = (
+            f"रद्द किया: {summary}." if is_hindi else f"Cancelled: {summary}."
+        )
+        state["pending_action"] = None
+        state["pending_send"] = None
+        state.setdefault("transient_actions", []).append({"type": "system", "text": notice})
+        return None  # fall through to main LLM
+
+    if intent == "clarify":
+        desc = describe_pending_action(pending_action)
+        if is_hindi:
+            reply = (
+                f"{desc.get('summary_hi')} अभी पुष्टि का इंतज़ार कर रही है। "
+                "क्या मैं इसे बना दूँ या रद्द कर दूँ?"
+            )
+        else:
+            reply = (
+                f"{desc.get('summary_en')} is still waiting. "
+                "Do you want me to create it, or cancel?"
+            )
+        state["messages"].append({"role": "user", "content": user_message})
+        state["messages"].append({"role": "assistant", "content": reply})
+        return reply, reply, []
+
+    if intent == "confirm":
         confirmed_input = dict(pending_action["tool_input"])
         confirmed_input["confirmed"] = True
         tool_name = pending_action["tool_name"]
@@ -253,19 +401,9 @@ def handle_pending_action(state: dict, user_message: str) -> tuple[str | None, s
         state["messages"].append({"role": "assistant", "content": reply})
         return reply, spoken_reply, actions
 
-    if is_negative(user_message):
-        state["pending_action"] = None
-        reply = "ठीक है, मैंने यह कार्रवाई रद्द कर दी है।" if is_hindi else "Okay, I canceled that action."
-        spoken_reply = reply
-        state["messages"].append({"role": "user", "content": user_message})
-        state["messages"].append({"role": "assistant", "content": reply})
-        return reply, spoken_reply, []
-
-    reply = (
-        "एक कार्रवाई पुष्टि का इंतज़ार कर रही है। आगे बढ़ने के लिए पुष्टि करें या रद्द करने के लिए मना करें।"
-        if is_hindi
-        else "I have a pending action waiting for confirmation. Please confirm to continue or say cancel to stop."
-    )
+    # intent == "cancel"
+    state["pending_action"] = None
+    reply = "ठीक है, मैंने यह कार्रवाई रद्द कर दी है।" if is_hindi else "Okay, I canceled that action."
     spoken_reply = reply
     state["messages"].append({"role": "user", "content": user_message})
     state["messages"].append({"role": "assistant", "content": reply})
@@ -377,11 +515,11 @@ def extract_card_actions(result: dict) -> list:
     return actions
 
 
-def get_tts_config(language: str) -> tuple[str, str]:
+def get_sarvam_language_code(language: str) -> str:
     normalized = (language or "en-IN").lower()
     if normalized.startswith("hi"):
-        return DEFAULT_HI_VOICE_ID, "hi"
-    return DEFAULT_EN_VOICE_ID, "en"
+        return "hi-IN"
+    return "en-IN"
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -392,13 +530,15 @@ async def chat(request: ChatRequest):
     state = get_conversation_state(conversation_id)
     state["language"] = request.language or state.get("language", "en-IN")
 
-    pending_reply, pending_spoken_reply, pending_actions = handle_pending_action(state, request.message)
-    if pending_reply is not None:
+    pending_result = handle_pending_action(state, request.message)
+    if pending_result is not None:
+        pending_reply, pending_spoken_reply, pending_actions = pending_result
         return ChatResponse(
             reply=pending_reply,
             spoken_reply=pending_spoken_reply or pending_reply,
             conversation_id=conversation_id,
             actions=pending_actions,
+            pending=make_pending_payload(state),
         )
 
     send_reply, send_spoken_reply, send_actions = handle_pending_send(state, request.message)
@@ -408,6 +548,7 @@ async def chat(request: ChatRequest):
             spoken_reply=send_spoken_reply or send_reply,
             conversation_id=conversation_id,
             actions=send_actions,
+            pending=make_pending_payload(state),
         )
 
     messages = state["messages"]
@@ -463,6 +604,10 @@ async def chat(request: ChatRequest):
     if state.get("pending_action"):
         actions = []
 
+    # Drain any system notices left by handle_pending_action when it released the lock
+    transient = state.pop("transient_actions", [])
+    actions = transient + actions
+
     final_text = "".join(
         block.text for block in response.content if hasattr(block, "text")
     )
@@ -474,58 +619,108 @@ async def chat(request: ChatRequest):
         spoken_reply=spoken_reply,
         conversation_id=conversation_id,
         actions=actions,
+        pending=make_pending_payload(state),
     )
 
 
 @app.post("/api/tts")
 async def text_to_speech(request: TTSRequest):
-    """Generate spoken audio for assistant replies using ElevenLabs."""
+    """Generate spoken audio for assistant replies using Sarvam AI."""
 
-    if not ELEVENLABS_API_KEY:
-        raise HTTPException(status_code=503, detail="ELEVENLABS_API_KEY is not configured.")
+    if not SARVAM_API_KEY:
+        raise HTTPException(status_code=503, detail="SARVAM_API_KEY is not configured.")
 
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is required.")
 
-    voice_id, language_code = get_tts_config(request.language)
+    language_code = get_sarvam_language_code(request.language)
 
     try:
-        eleven_response = requests.post(
-            f"{ELEVENLABS_BASE_URL}/text-to-speech/{voice_id}",
-            params={"output_format": "mp3_44100_128"},
+        sarvam_response = requests.post(
+            f"{SARVAM_BASE_URL}/text-to-speech",
             headers={
-                "xi-api-key": ELEVENLABS_API_KEY,
+                "api-subscription-key": SARVAM_API_KEY,
                 "Content-Type": "application/json",
-                "Accept": "audio/mpeg",
             },
             json={
                 "text": text,
-                "model_id": DEFAULT_TTS_MODEL,
-                "language_code": language_code,
-                "voice_settings": {
-                    "stability": 0.45,
-                    "similarity_boost": 0.75,
-                },
+                "target_language_code": language_code,
+                "model": SARVAM_TTS_MODEL,
+                "speaker": SARVAM_TTS_SPEAKER,
+                "speech_sample_rate": "24000",
+                "output_audio_codec": "mp3",
             },
             timeout=45,
         )
     except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"ElevenLabs request failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Sarvam TTS request failed: {exc}") from exc
 
-    if not eleven_response.ok:
-        detail = eleven_response.text[:500] or "ElevenLabs synthesis failed."
+    if not sarvam_response.ok:
+        detail = sarvam_response.text[:500] or "Sarvam TTS failed."
         raise HTTPException(status_code=502, detail=detail)
 
+    data = sarvam_response.json()
+    audios = data.get("audios", [])
+    if not audios:
+        raise HTTPException(status_code=502, detail="Sarvam TTS returned no audio.")
+
+    audio_bytes = base64.b64decode(audios[0])
+
     return Response(
-        content=eleven_response.content,
+        content=audio_bytes,
         media_type="audio/mpeg",
         headers={
-            "X-Voice-Provider": "elevenlabs",
-            "X-ElevenLabs-Voice-Id": voice_id,
+            "X-Voice-Provider": "sarvam",
             "X-TTS-Language": language_code,
         },
     )
+
+
+@app.post("/api/voice/transcribe")
+async def voice_transcribe(
+    file: UploadFile = File(...),
+    language: str = "en-IN",
+):
+    """Transcribe audio to text using Sarvam AI. Handles Hindi + English natively."""
+    if not SARVAM_API_KEY:
+        raise HTTPException(status_code=503, detail="SARVAM_API_KEY is not configured.")
+
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio upload.")
+
+    filename = file.filename or "audio.webm"
+    content_type = (file.content_type or "audio/webm").split(";")[0].strip()
+
+    language_code = get_sarvam_language_code(language)
+
+    try:
+        resp = requests.post(
+            f"{SARVAM_BASE_URL}/speech-to-text",
+            headers={"api-subscription-key": SARVAM_API_KEY},
+            files={"file": (filename, audio_bytes, content_type)},
+            data={
+                "model": SARVAM_STT_MODEL,
+                "language_code": language_code,
+            },
+            timeout=60,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Sarvam STT request failed: {exc}") from exc
+
+    if not resp.ok:
+        log.error("Sarvam STT %s rejected upload (%s bytes, type=%s): %s",
+                  resp.status_code, len(audio_bytes), content_type, resp.text[:500])
+        raise HTTPException(status_code=502, detail=resp.text[:500] or "Sarvam STT failed.")
+
+    data = resp.json()
+    log.info("Sarvam STT transcribed %s bytes → %r (%s)",
+             len(audio_bytes), (data.get("transcript") or "")[:80], data.get("language_code"))
+    return {
+        "text": (data.get("transcript") or "").strip(),
+        "language_code": data.get("language_code"),
+    }
 
 
 @app.get("/api/health")
@@ -611,18 +806,24 @@ async def get_invoice(name: str):
 
 
 @app.get("/api/invoices")
-async def list_invoices(status: str = None, customer: str = None, limit: int = 20):
+async def list_invoices(status: str = None, customer: str = None, limit: int = 50):
     """List invoices with optional filters for the list page."""
+    from datetime import date
     filters = []
     if status:
         if status.lower() == "unpaid":
-            filters.append(["outstanding_amount", ">", 0])
-        elif status.lower() == "overdue":
-            filters.append(["outstanding_amount", ">", 0])
-            filters.append(["due_date", "<", __import__("datetime").date.today().isoformat()])
-        elif status.lower() == "paid":
-            filters.append(["outstanding_amount", "=", 0])
             filters.append(["docstatus", "=", 1])
+            filters.append(["outstanding_amount", ">", 0])
+            filters.append(["due_date", ">=", date.today().isoformat()])
+        elif status.lower() == "overdue":
+            filters.append(["docstatus", "=", 1])
+            filters.append(["outstanding_amount", ">", 0])
+            filters.append(["due_date", "<", date.today().isoformat()])
+        elif status.lower() == "paid":
+            filters.append(["docstatus", "=", 1])
+            filters.append(["outstanding_amount", "=", 0])
+        elif status.lower() == "draft":
+            filters.append(["docstatus", "=", 0])
         else:
             filters.append(["status", "=", status])
     if customer:

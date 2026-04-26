@@ -10,6 +10,15 @@ logging.basicConfig(level=logging.INFO)
 MODEL_NAME = "claude-sonnet-4-6"
 
 
+def normalize_name(name: str) -> str:
+    """Normalize a name for comparison — strips punctuation, extra spaces, lowercases."""
+    n = name.strip().lower()
+    n = re.sub(r"[.\,\-]+$", "", n)
+    n = re.sub(r"\s+", " ", n)
+    n = n.replace(".", "").replace(",", "")
+    return n.strip()
+
+
 TOOLS = [
     {
         "name": "list_documents",
@@ -139,6 +148,14 @@ TOOLS = [
                 "due_date": {
                     "type": "string",
                     "description": "Due date in YYYY-MM-DD format when provided by the user.",
+                },
+                "tax_template": {
+                    "type": "string",
+                    "description": (
+                        "GST tax template to apply. Use when the user mentions GST or tax. "
+                        "Options: 'GST 5%', 'GST 12%', 'GST 18%', 'GST 28%'. "
+                        "Default to 'GST 18%' if user just says 'add GST' without specifying a rate."
+                    ),
                 },
                 "items": {
                     "type": "array",
@@ -275,6 +292,33 @@ TOOLS = [
         },
     },
     {
+        "name": "submit_document",
+        "description": (
+            "Submit a Draft document in ERPNext (changes docstatus from 0 to 1). "
+            "Use this when the user asks to submit, finalize, or confirm a Draft invoice or other document. "
+            "A Sales Invoice must be submitted before payments can be recorded against it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "doctype": {
+                    "type": "string",
+                    "description": "Document type: Sales Invoice, Purchase Invoice, etc.",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "The document ID, e.g. ACC-SINV-2026-00001.",
+                },
+                "confirmed": {
+                    "type": "boolean",
+                    "description": "Only set true after the user has explicitly confirmed.",
+                    "default": False,
+                },
+            },
+            "required": ["doctype", "name"],
+        },
+    },
+    {
         "name": "navigate_to_page",
         "description": (
             "Navigate the user to a page in the app. Use this when the user says "
@@ -373,7 +417,7 @@ def document_path(doctype: str, name: str | None = None) -> str:
 
 def tool_requires_confirmation(tool_name: str) -> bool:
     # create_sales_invoice handles its own confirmation (resolves items/customers first)
-    return tool_name in {"delete_document", "record_payment"}
+    return tool_name in {"delete_document", "record_payment", "submit_document"}
 
 
 def _summarize_line_items(items: list[dict[str, Any]]) -> list[str]:
@@ -439,15 +483,17 @@ def resolve_item_code(erp_client, query: str, rate: float = 0, auto_create: bool
         limit=200,
     )
 
+    normalized_variants = [normalize_name(v) for v in variants]
+
     exact_match = next(
         (
             item
             for item in items
-            for variant in variants
-            if variant in {
-                str(item.get("name", "")).lower(),
-                str(item.get("item_code", "")).lower(),
-                str(item.get("item_name", "")).lower(),
+            for nv in normalized_variants
+            if nv in {
+                normalize_name(str(item.get("name", ""))),
+                normalize_name(str(item.get("item_code", ""))),
+                normalize_name(str(item.get("item_name", ""))),
             }
         ),
         None,
@@ -459,9 +505,9 @@ def resolve_item_code(erp_client, query: str, rate: float = 0, auto_create: bool
         item
         for item in items
         if any(
-            variant in str(item.get("item_code", "")).lower()
-            or variant in str(item.get("item_name", "")).lower()
-            for variant in variants
+            nv in normalize_name(str(item.get("item_code", "")))
+            or nv in normalize_name(str(item.get("item_name", "")))
+            for nv in normalized_variants
         )
     ]
     if len(partial_matches) == 1:
@@ -516,6 +562,8 @@ def resolve_customer(erp_client, customer_name: str) -> tuple[str, bool]:
 
     Returns (customer_name_in_erp, was_created).
     """
+    normalized_query = normalize_name(customer_name)
+
     # Exact match
     try:
         doc = erp_client.get_document("Customer", customer_name)
@@ -526,11 +574,13 @@ def resolve_customer(erp_client, customer_name: str) -> tuple[str, bool]:
 
     # Search by partial name
     results = erp_client.search("Customer", customer_name, fields=["name", "customer_name"], limit=5)
+    if not results:
+        results = find_similar_customers(erp_client, customer_name)
     if results:
-        # Check for close match
+        # Check for normalized match
         for r in results:
-            if (r.get("name", "").lower() == customer_name.lower()
-                    or r.get("customer_name", "").lower() == customer_name.lower()):
+            if (normalize_name(r.get("name", "")) == normalized_query
+                    or normalize_name(r.get("customer_name", "")) == normalized_query):
                 return r["name"], False
         # If only one result, use it
         if len(results) == 1:
@@ -589,6 +639,12 @@ def build_confirmation_preview(tool_name: str, tool_input: dict[str, Any]) -> st
         parts.append(f"Mode: {tool_input.get('mode_of_payment', 'Cash')}")
         return ". ".join(parts) + ". Please confirm whether I should record this payment."
 
+    if tool_name == "submit_document":
+        return (
+            f"Submit {tool_input['doctype']} '{tool_input['name']}'. "
+            "This will finalize it and it cannot be edited afterwards. Please confirm."
+        )
+
     if tool_name == "delete_document":
         return (
             f"Delete {tool_input['doctype']} '{tool_input['name']}'. "
@@ -596,6 +652,52 @@ def build_confirmation_preview(tool_name: str, tool_input: dict[str, Any]) -> st
         )
 
     return "Please confirm this action."
+
+
+def find_similar_customers(erp_client, query: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Find customers whose customer_name partially matches the query."""
+    results = erp_client.get_list(
+        "Customer",
+        filters=[["customer_name", "like", f"%{query}%"]],
+        fields=["name", "customer_name"],
+        limit=limit,
+    )
+    if not results:
+        results = erp_client.get_list(
+            "Customer",
+            filters=[["name", "like", f"%{query}%"]],
+            fields=["name", "customer_name"],
+            limit=limit,
+        )
+    return results
+
+
+def find_similar_items(erp_client, query: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Find items whose item_name or item_code partially matches the query."""
+    results = erp_client.get_list(
+        "Item",
+        filters=[["item_name", "like", f"%{query}%"]],
+        fields=["name", "item_code", "item_name"],
+        limit=limit,
+    )
+    if not results:
+        results = erp_client.get_list(
+            "Item",
+            filters=[["item_code", "like", f"%{query}%"]],
+            fields=["name", "item_code", "item_name"],
+            limit=limit,
+        )
+    return results
+
+
+def _extract_filter_value(filters: list, field_names: tuple) -> str | None:
+    """Extract a filter value from a list of filters by field name."""
+    if not filters:
+        return None
+    for f in filters:
+        if len(f) >= 3 and str(f[0]).lower() in field_names and str(f[1]) == "=":
+            return str(f[2])
+    return None
 
 
 def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict[str, Any]:
@@ -616,15 +718,64 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
                 fields=tool_input.get("fields") or None,
                 limit=tool_input.get("limit", 20),
             )
+            if not result:
+                customer_query = _extract_filter_value(tool_input.get("filters") or [], ("customer", "customer_name"))
+                if customer_query:
+                    similar = find_similar_customers(erp_client, customer_query)
+                    if similar:
+                        return {
+                            "status": "success",
+                            "data": [],
+                            "similar_customers": similar,
+                            "note": f"No exact match for customer '{customer_query}'. Similar customers found.",
+                        }
+                item_query = _extract_filter_value(tool_input.get("filters") or [], ("item", "item_code", "item_name"))
+                if item_query:
+                    similar = find_similar_items(erp_client, item_query)
+                    if similar:
+                        return {
+                            "status": "success",
+                            "data": [],
+                            "similar_items": similar,
+                            "note": f"No exact match for item '{item_query}'. Similar items found.",
+                        }
             return {"status": "success", "data": result}
 
         if tool_name == "get_document":
-            result = erp_client.get_document(tool_input["doctype"], tool_input["name"])
-            return {"status": "success", "data": result}
+            try:
+                result = erp_client.get_document(tool_input["doctype"], tool_input["name"])
+                return {"status": "success", "data": result}
+            except Exception:
+                doctype_lower = tool_input["doctype"].strip().lower()
+                if doctype_lower == "customer":
+                    similar = find_similar_customers(erp_client, tool_input["name"])
+                    if similar:
+                        return {
+                            "status": "not_found",
+                            "error": f"No customer named '{tool_input['name']}' found.",
+                            "similar_customers": similar,
+                        }
+                if doctype_lower == "item":
+                    similar = find_similar_items(erp_client, tool_input["name"])
+                    if similar:
+                        return {
+                            "status": "not_found",
+                            "error": f"No item named '{tool_input['name']}' found.",
+                            "similar_items": similar,
+                        }
+                raise
 
         if tool_name == "search_documents":
             if tool_input["doctype"].strip().lower() == "item":
                 result = search_item_catalog(
+                    erp_client,
+                    tool_input["query"],
+                    limit=tool_input.get("limit", 10),
+                )
+                return {"status": "success", "data": result}
+
+            if tool_input["doctype"].strip().lower() == "customer":
+                result = find_similar_customers(
                     erp_client,
                     tool_input["query"],
                     limit=tool_input.get("limit", 10),
@@ -696,6 +847,11 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
                 if tool_input.get("due_date"):
                     data["due_date"] = tool_input["due_date"]
 
+                resolved_taxes = tool_input.get("_resolved_taxes")
+                if resolved_taxes:
+                    data["taxes_and_charges"] = resolved_taxes["template_name"]
+                    data["taxes"] = resolved_taxes["taxes"]
+
                 log.info("Creating Sales Invoice: %s", json.dumps(data, default=str))
                 created = erp_client.create_document("Sales Invoice", data)
                 invoice_name = created.get("name")
@@ -750,18 +906,46 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
                     }
                 )
 
+            resolved_taxes = None
+            tax_template = tool_input.get("tax_template")
+            if tax_template:
+                template_name = tax_template if tax_template.endswith(" - ND") else f"{tax_template} - ND"
+                try:
+                    tmpl_doc = erp_client.get_document("Sales Taxes and Charges Template", template_name)
+                    resolved_taxes = {
+                        "template_name": template_name,
+                        "taxes": [
+                            {
+                                "charge_type": t["charge_type"],
+                                "account_head": t["account_head"],
+                                "rate": t["rate"],
+                                "description": t["description"],
+                            }
+                            for t in tmpl_doc.get("taxes", [])
+                        ],
+                    }
+                except Exception:
+                    return {"status": "error", "error": f"Tax template '{tax_template}' not found."}
+
             preview = build_confirmation_preview(tool_name, tool_input)
             if auto_created:
                 preview = ". ".join(auto_created) + ". " + preview
+            if resolved_taxes:
+                preview += f" Tax: {tax_template}."
+
+            pending_input = {
+                **tool_input,
+                "_resolved_customer": customer_name,
+                "_resolved_items": resolved_items,
+            }
+            if resolved_taxes:
+                pending_input["_resolved_taxes"] = resolved_taxes
+
             return {
                 "status": "confirmation_required",
                 "tool_name": tool_name,
                 "preview_message": preview,
-                "pending_input": {
-                    **tool_input,
-                    "_resolved_customer": customer_name,
-                    "_resolved_items": resolved_items,
-                },
+                "pending_input": pending_input,
             }
 
         if tool_name == "send_invoice":
@@ -826,6 +1010,30 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
 
             customer = invoice.get("customer")
             company = invoice.get("company")
+            currency = invoice.get("currency", "INR")
+
+            mode = tool_input.get("mode_of_payment", "Cash")
+            available_modes = [
+                m["name"] for m in erp_client.get_list("Mode of Payment", fields=["name"], limit=50)
+            ]
+            if mode not in available_modes:
+                mode = "Cash"
+
+            account_type = "Bank" if mode != "Cash" else "Cash"
+            accounts = erp_client.get_list(
+                "Account",
+                filters=[["company", "=", company], ["account_type", "=", account_type], ["is_group", "=", 0]],
+                fields=["name"],
+                limit=1,
+            )
+            if not accounts:
+                accounts = erp_client.get_list(
+                    "Account",
+                    filters=[["company", "=", company], ["account_type", "=", "Cash"], ["is_group", "=", 0]],
+                    fields=["name"],
+                    limit=1,
+                )
+            paid_to = accounts[0]["name"] if accounts else None
 
             payment_data = {
                 "payment_type": "Receive",
@@ -833,7 +1041,11 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
                 "party": customer,
                 "paid_amount": amount,
                 "received_amount": amount,
-                "mode_of_payment": tool_input.get("mode_of_payment", "Cash"),
+                "mode_of_payment": mode,
+                "source_exchange_rate": 1,
+                "target_exchange_rate": 1,
+                "paid_to_account_currency": currency,
+                "paid_from_account_currency": currency,
                 "references": [
                     {
                         "reference_doctype": "Sales Invoice",
@@ -842,6 +1054,8 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
                     }
                 ],
             }
+            if paid_to:
+                payment_data["paid_to"] = paid_to
             if company:
                 payment_data["company"] = company
 
@@ -888,6 +1102,27 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
             return {
                 "status": "success",
                 "message": f"Updated {tool_input['doctype']} {tool_input['name']}.",
+                "data": result,
+            }
+
+        if tool_name == "submit_document":
+            doc = erp_client.get_document(tool_input["doctype"], tool_input["name"])
+            if int(doc.get("docstatus", 0)) != 0:
+                return {
+                    "status": "error",
+                    "error": f"{tool_input['doctype']} {tool_input['name']} is already submitted.",
+                }
+            try:
+                result = erp_client.submit_document(tool_input["doctype"], tool_input["name"])
+            except Exception as exc:
+                log.error("submit_document failed: %s", exc)
+                return {
+                    "status": "error",
+                    "error": f"ERPNext rejected the submit: {exc}",
+                }
+            return {
+                "status": "success",
+                "message": f"{tool_input['doctype']} {tool_input['name']} has been submitted.",
                 "data": result,
             }
 
