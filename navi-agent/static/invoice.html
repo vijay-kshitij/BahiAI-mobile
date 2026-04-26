@@ -221,7 +221,7 @@
                     '<div class="section">' +
                         '<div class="section-title">Summary</div>' +
                         '<div class="totals-row"><span class="label">Subtotal</span><span class="value">' + esc("\u20B9" + (inv.net_total || 0)) + '</span></div>' +
-                        (inv.total_taxes_and_charges ? '<div class="totals-row"><span class="label">Tax</span><span class="value">' + esc("\u20B9" + inv.total_taxes_and_charges) + '</span></div>' : '') +
+                        (inv.total_taxes_and_charges ? '<div class="totals-row"><span class="label">Tax' + (inv.taxes_and_charges ? ' \u2014 ' + esc(inv.taxes_and_charges.replace(' - ND', '')) : '') + '</span><span class="value">' + esc("\u20B9" + inv.total_taxes_and_charges) + '</span></div>' : '') +
                         '<div class="totals-row grand"><span>Grand Total</span><span>' + esc("\u20B9" + (inv.grand_total || 0)) + '</span></div>' +
                     '</div>';
 

@@ -782,6 +782,7 @@ async def get_invoice(name: str):
             "net_total": doc.get("net_total"),
             "outstanding_amount": doc.get("outstanding_amount"),
             "total_taxes_and_charges": doc.get("total_taxes_and_charges"),
+            "taxes_and_charges": doc.get("taxes_and_charges"),
             "currency": doc.get("currency", "INR"),
             "items": [
                 {
