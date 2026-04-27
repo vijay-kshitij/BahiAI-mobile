@@ -98,6 +98,58 @@ class ERPNextClient:
             raise Exception(f"Submit failed: {error_msg}")
         return response.json().get("data", response.json().get("message", {}))
 
+    def cancel_document(self, doctype, name):
+        """Cancel a submitted document (changes docstatus from 1 to 2)."""
+        doc = self.get_document(doctype, name)
+        doc["docstatus"] = 2
+        response = self.session.post(
+            f"{self.base_url}/api/method/frappe.client.cancel",
+            json={"doctype": doctype, "name": name},
+        )
+        if not response.ok:
+            error_msg = response.text
+            try:
+                error_data = response.json()
+                server_messages = error_data.get("_server_messages")
+                if server_messages:
+                    import json as _json
+                    msgs = _json.loads(server_messages)
+                    if msgs:
+                        inner = _json.loads(msgs[0]) if isinstance(msgs[0], str) else msgs[0]
+                        error_msg = inner.get("message", error_msg)
+            except Exception:
+                pass
+            raise Exception(f"Cancel failed: {error_msg}")
+        return response.json().get("data", response.json().get("message", {}))
+
+    def amend_document(self, doctype, name):
+        """Amend a cancelled document — creates a new draft copy."""
+        doc = self.get_document(doctype, name)
+        doc["docstatus"] = 0
+        doc["amended_from"] = name
+        doc.pop("name", None)
+        if doc.get("posting_date"):
+            doc["set_posting_time"] = 1
+        response = self.session.post(
+            self._resource_url(doctype),
+            json=doc,
+        )
+        if not response.ok:
+            error_msg = response.text
+            try:
+                error_data = response.json()
+                server_messages = error_data.get("_server_messages")
+                if server_messages:
+                    import json as _json
+                    msgs = _json.loads(server_messages)
+                    if msgs:
+                        inner = _json.loads(msgs[0]) if isinstance(msgs[0], str) else msgs[0]
+                        error_msg = inner.get("message", error_msg)
+            except Exception:
+                pass
+            raise Exception(f"Amend failed: {error_msg}")
+        return response.json().get("data", {})
+
     def search(self, doctype, query, fields=None, limit=10):
         """Search for documents by partial name."""
         response = self.session.get(

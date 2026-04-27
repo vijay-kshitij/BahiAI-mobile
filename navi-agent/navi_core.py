@@ -319,6 +319,60 @@ TOOLS = [
         },
     },
     {
+        "name": "cancel_document",
+        "description": (
+            "Cancel a submitted document in ERPNext (changes docstatus from 1 to 2). "
+            "Use when the user asks to cancel a submitted invoice or other document. "
+            "Cancelled documents cannot be edited — use amend_document to create a corrected copy."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "doctype": {
+                    "type": "string",
+                    "description": "Document type: Sales Invoice, Payment Entry, etc.",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "The document ID, e.g. ACC-SINV-2026-00001.",
+                },
+                "confirmed": {
+                    "type": "boolean",
+                    "description": "Only set true after the user has explicitly confirmed.",
+                    "default": False,
+                },
+            },
+            "required": ["doctype", "name"],
+        },
+    },
+    {
+        "name": "amend_document",
+        "description": (
+            "Amend a cancelled document in ERPNext — creates a new draft copy that can be edited and resubmitted. "
+            "Use when the user wants to correct a cancelled invoice or document. "
+            "The document must be cancelled first (docstatus=2) before it can be amended."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "doctype": {
+                    "type": "string",
+                    "description": "Document type: Sales Invoice, Payment Entry, etc.",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "The cancelled document ID, e.g. ACC-SINV-2026-00001.",
+                },
+                "confirmed": {
+                    "type": "boolean",
+                    "description": "Only set true after the user has explicitly confirmed.",
+                    "default": False,
+                },
+            },
+            "required": ["doctype", "name"],
+        },
+    },
+    {
         "name": "navigate_to_page",
         "description": (
             "Navigate the user to a page in the app. Use this when the user says "
@@ -392,6 +446,12 @@ When the user says someone paid or asks to record a payment:
 2. Confirm the amount (default to full outstanding)
 3. Ask for confirmation before recording
 
+## Cancelling and amending
+- To cancel a submitted invoice: use cancel_document. This reverses all ledger entries.
+- To edit a submitted invoice: first cancel it, then amend it (amend_document creates a new draft copy), then edit the draft, then submit it again.
+- Both cancel and amend require user confirmation.
+- When the user says "edit this invoice" and it's submitted, explain the cancel → amend → edit → resubmit flow and ask if they want to proceed.
+
 ## Rules
 - Keep replies SHORT. One or two sentences max.
 - Always use tools for factual data. Never invent balances or totals.
@@ -417,7 +477,7 @@ def document_path(doctype: str, name: str | None = None) -> str:
 
 def tool_requires_confirmation(tool_name: str) -> bool:
     # create_sales_invoice handles its own confirmation (resolves items/customers first)
-    return tool_name in {"delete_document", "record_payment", "submit_document"}
+    return tool_name in {"delete_document", "record_payment", "submit_document", "cancel_document", "amend_document"}
 
 
 def _summarize_line_items(items: list[dict[str, Any]]) -> list[str]:
@@ -643,6 +703,18 @@ def build_confirmation_preview(tool_name: str, tool_input: dict[str, Any]) -> st
         return (
             f"Submit {tool_input['doctype']} '{tool_input['name']}'. "
             "This will finalize it and it cannot be edited afterwards. Please confirm."
+        )
+
+    if tool_name == "cancel_document":
+        return (
+            f"Cancel {tool_input['doctype']} '{tool_input['name']}'. "
+            "This will reverse all ledger entries. Please confirm."
+        )
+
+    if tool_name == "amend_document":
+        return (
+            f"Amend {tool_input['doctype']} '{tool_input['name']}'. "
+            "This will create a new draft copy for editing. Please confirm."
         )
 
     if tool_name == "delete_document":
@@ -1123,6 +1195,50 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
             return {
                 "status": "success",
                 "message": f"{tool_input['doctype']} {tool_input['name']} has been submitted.",
+                "data": result,
+            }
+
+        if tool_name == "cancel_document":
+            doc = erp_client.get_document(tool_input["doctype"], tool_input["name"])
+            if int(doc.get("docstatus", 0)) != 1:
+                return {
+                    "status": "error",
+                    "error": f"{tool_input['doctype']} {tool_input['name']} is not submitted (docstatus={doc.get('docstatus')}). Only submitted documents can be cancelled.",
+                }
+            try:
+                result = erp_client.cancel_document(tool_input["doctype"], tool_input["name"])
+            except Exception as exc:
+                log.error("cancel_document failed: %s", exc)
+                return {
+                    "status": "error",
+                    "error": f"ERPNext rejected the cancellation: {exc}",
+                }
+            return {
+                "status": "success",
+                "message": f"{tool_input['doctype']} {tool_input['name']} has been cancelled.",
+                "data": result,
+            }
+
+        if tool_name == "amend_document":
+            doc = erp_client.get_document(tool_input["doctype"], tool_input["name"])
+            if int(doc.get("docstatus", 0)) != 2:
+                return {
+                    "status": "error",
+                    "error": f"{tool_input['doctype']} {tool_input['name']} is not cancelled (docstatus={doc.get('docstatus')}). Only cancelled documents can be amended.",
+                }
+            try:
+                result = erp_client.amend_document(tool_input["doctype"], tool_input["name"])
+            except Exception as exc:
+                log.error("amend_document failed: %s", exc)
+                return {
+                    "status": "error",
+                    "error": f"ERPNext rejected the amendment: {exc}",
+                }
+            new_name = result.get("name", "unknown")
+            return {
+                "status": "success",
+                "message": f"Amended copy created: {new_name} (Draft). You can now edit and resubmit it.",
+                "new_name": new_name,
                 "data": result,
             }
 
