@@ -10,7 +10,7 @@
     "List all customers",
   ];
   const LANGUAGES = { "en-IN": "English", "hi-IN": "Hindi" };
-  const STORAGE_KEY = "navi_chat_state";
+  const STORAGE_KEY = "bahi_chat_state";
 
   // ── State ──
   let persisted = {};
@@ -100,7 +100,7 @@
   function renderWelcome() {
     return '<div class="welcome">' +
       '<div class="welcome-emoji">&#128075;</div>' +
-      '<strong>Hi! I\'m Navi.</strong><br>' +
+      '<strong>Hi! I\'m Akash.</strong><br>' +
       'I can help you create invoices, record payments, and manage customers.<br>' +
       '<div class="suggestions">' +
       SUGGESTIONS.map(function (s) {

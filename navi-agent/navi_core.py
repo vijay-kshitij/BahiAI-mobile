@@ -3,7 +3,7 @@ import logging
 import re
 from typing import Any
 
-log = logging.getLogger("navi")
+log = logging.getLogger("bahi")
 logging.basicConfig(level=logging.INFO)
 
 
@@ -406,7 +406,7 @@ TOOLS = [
 ]
 
 
-SYSTEM_PROMPT = """You are Navi, an AI invoicing assistant for small businesses.
+SYSTEM_PROMPT = """You are Akash, an AI invoicing assistant for small businesses.
 Your job is to help users manage invoicing — create invoices, record payments, track receivables, and manage customers and items — entirely through chat.
 
 ## Invoice creation — STRICT RULES

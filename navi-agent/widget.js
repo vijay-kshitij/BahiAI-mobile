@@ -1,5 +1,5 @@
 /**
- * Navi Chat Widget
+ * Bahi Chat Widget
  * Drop this script into any website to add an AI copilot.
  * 
  * Usage:
@@ -10,7 +10,7 @@
   // Configuration
   const scriptTag = document.currentScript;
   const SERVER_URL = (scriptTag && scriptTag.getAttribute("data-server")) || window.location.origin;
-  const WIDGET_TITLE = (scriptTag && scriptTag.getAttribute("data-title")) || "Navi";
+  const WIDGET_TITLE = (scriptTag && scriptTag.getAttribute("data-title")) || "Bahi";
   const ERP_NEXT_ORIGIN =
     (scriptTag && scriptTag.getAttribute("data-erpnext-origin")) ||
     window.location.origin;
@@ -26,7 +26,7 @@
     "hi-IN": "Hindi",
   };
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const STORAGE_KEY = `navi_widget_state_${APP_BOOT_ID}`;
+  const STORAGE_KEY = `bahi_widget_state_${APP_BOOT_ID}`;
   let persistedState = {};
   try {
     persistedState = JSON.parse(window.sessionStorage.getItem(STORAGE_KEY) || "{}");
@@ -60,7 +60,7 @@
   styles.textContent = `
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&display=swap');
 
-    #navi-widget-container * {
+    #bahi-widget-container * {
       margin: 0;
       padding: 0;
       box-sizing: border-box;
@@ -68,7 +68,7 @@
     }
 
     /* ── Floating Button ── */
-    #navi-fab {
+    #bahi-fab {
       position: fixed;
       bottom: 24px;
       right: 24px;
@@ -86,24 +86,24 @@
       z-index: 99999;
     }
 
-    #navi-fab:hover {
+    #bahi-fab:hover {
       transform: translateY(-2px);
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255,255,255,0.08);
     }
 
-    #navi-fab svg {
+    #bahi-fab svg {
       width: 24px;
       height: 24px;
       fill: white;
       transition: transform 0.3s ease;
     }
 
-    #navi-fab.open svg {
+    #bahi-fab.open svg {
       transform: rotate(90deg);
     }
 
     /* ── Chat Window ── */
-    #navi-chat {
+    #bahi-chat {
       position: fixed;
       bottom: 92px;
       right: 24px;
@@ -116,14 +116,14 @@
       flex-direction: column;
       overflow: hidden;
       z-index: 99998;
-      animation: navi-slide-up 0.25s ease-out;
+      animation: bahi-slide-up 0.25s ease-out;
     }
 
-    #navi-chat.visible {
+    #bahi-chat.visible {
       display: flex;
     }
 
-    @keyframes navi-slide-up {
+    @keyframes bahi-slide-up {
       from {
         opacity: 0;
         transform: translateY(12px) scale(0.97);
@@ -135,7 +135,7 @@
     }
 
     /* ── Header ── */
-    #navi-header {
+    #bahi-header {
       padding: 16px 20px;
       background: #1a1a2e;
       color: white;
@@ -145,14 +145,14 @@
       gap: 12px;
     }
 
-    #navi-header-main {
+    #bahi-header-main {
       display: flex;
       align-items: center;
       gap: 12px;
       min-width: 0;
     }
 
-    #navi-header-icon {
+    #bahi-header-icon {
       width: 32px;
       height: 32px;
       background: rgba(255,255,255,0.12);
@@ -162,13 +162,13 @@
       justify-content: center;
     }
 
-    #navi-header-icon svg {
+    #bahi-header-icon svg {
       width: 18px;
       height: 18px;
       fill: #6ee7b7;
     }
 
-    #navi-header-info h3 {
+    #bahi-header-info h3 {
       font-size: 14px;
       font-weight: 600;
       letter-spacing: -0.01em;
@@ -176,7 +176,7 @@
       color: #ffffff;
     }
 
-    #navi-header-info p {
+    #bahi-header-info p {
       font-size: 11px;
       opacity: 0.6;
       margin-top: 1px;
@@ -184,14 +184,14 @@
       color: rgba(255,255,255,0.82);
     }
 
-    #navi-header-controls {
+    #bahi-header-controls {
       display: flex;
       align-items: center;
       gap: 8px;
       flex-shrink: 0;
     }
 
-    #navi-language {
+    #bahi-language {
       border: 1px solid rgba(255,255,255,0.18);
       background: rgba(255,255,255,0.08);
       color: white;
@@ -202,11 +202,11 @@
       cursor: pointer;
     }
 
-    #navi-language option {
+    #bahi-language option {
       color: #1a1a2e;
     }
 
-    .navi-icon-btn {
+    .bahi-icon-btn {
       width: 32px;
       height: 32px;
       border-radius: 10px;
@@ -220,28 +220,28 @@
       transition: background 0.15s ease, transform 0.15s ease;
     }
 
-    .navi-icon-btn:hover {
+    .bahi-icon-btn:hover {
       background: rgba(255,255,255,0.16);
       transform: translateY(-1px);
     }
 
-    .navi-icon-btn svg {
+    .bahi-icon-btn svg {
       width: 16px;
       height: 16px;
       fill: currentColor;
     }
 
-    .navi-icon-btn.active {
+    .bahi-icon-btn.active {
       background: #ef4444;
       border-color: #ef4444;
     }
 
-    .navi-icon-btn.muted {
+    .bahi-icon-btn.muted {
       opacity: 0.65;
     }
 
     /* ── Messages Area ── */
-    #navi-messages {
+    #bahi-messages {
       flex: 1;
       overflow-y: auto;
       padding: 16px;
@@ -251,34 +251,34 @@
       background: #fafafa;
     }
 
-    #navi-messages::-webkit-scrollbar {
+    #bahi-messages::-webkit-scrollbar {
       width: 4px;
     }
 
-    #navi-messages::-webkit-scrollbar-thumb {
+    #bahi-messages::-webkit-scrollbar-thumb {
       background: #ddd;
       border-radius: 4px;
     }
 
-    .navi-msg-row {
+    .bahi-msg-row {
       max-width: 100%;
       display: flex;
       align-items: flex-end;
       gap: 8px;
     }
 
-    .navi-msg-row-user {
+    .bahi-msg-row-user {
       align-self: flex-end;
       justify-content: flex-end;
     }
 
-    .navi-msg-row-bot,
-    .navi-msg-row-nav {
+    .bahi-msg-row-bot,
+    .bahi-msg-row-nav {
       align-self: flex-start;
       justify-content: flex-start;
     }
 
-    .navi-avatar {
+    .bahi-avatar {
       width: 28px;
       height: 28px;
       border-radius: 999px;
@@ -289,7 +289,7 @@
       box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
     }
 
-    .navi-avatar-bot {
+    .bahi-avatar-bot {
       background: linear-gradient(135deg, #1a1a2e 0%, #31456a 100%);
       color: #ffffff;
       font-size: 13px;
@@ -297,19 +297,19 @@
       letter-spacing: -0.02em;
     }
 
-    .navi-avatar-user {
+    .bahi-avatar-user {
       background: #e0f2fe;
       color: #0f172a;
       border: 1px solid #bae6fd;
     }
 
-    .navi-avatar-user svg {
+    .bahi-avatar-user svg {
       width: 15px;
       height: 15px;
       fill: currentColor;
     }
 
-    .navi-msg {
+    .bahi-msg {
       max-width: 85%;
       padding: 10px 14px;
       border-radius: 14px;
@@ -319,26 +319,26 @@
       box-shadow: 0 6px 20px rgba(15, 23, 42, 0.05);
     }
 
-    .navi-msg-user {
+    .bahi-msg-user {
       background: #e0f2fe;
       color: #111827;
       border: 1px solid #bae6fd;
       border-bottom-right-radius: 4px;
     }
 
-    .navi-msg-bot {
+    .bahi-msg-bot {
       background: #ffffff;
       color: #111827;
       border: 1px solid #e8e8ec;
       border-bottom-left-radius: 4px;
     }
 
-    .navi-msg-bot strong {
+    .bahi-msg-bot strong {
       font-weight: 600;
     }
 
     /* ── Navigation Message ── */
-    .navi-msg-nav {
+    .bahi-msg-nav {
       background: #ffffff;
       color: #111827;
       padding: 10px 14px;
@@ -351,7 +351,7 @@
     }
 
     /* ── Typing Indicator ── */
-    .navi-typing {
+    .bahi-typing {
       align-self: flex-start;
       display: flex;
       gap: 4px;
@@ -362,24 +362,24 @@
       border-bottom-left-radius: 4px;
     }
 
-    .navi-typing-dot {
+    .bahi-typing-dot {
       width: 6px;
       height: 6px;
       background: #aaa;
       border-radius: 50%;
-      animation: navi-bounce 1.2s ease-in-out infinite;
+      animation: bahi-bounce 1.2s ease-in-out infinite;
     }
 
-    .navi-typing-dot:nth-child(2) { animation-delay: 0.15s; }
-    .navi-typing-dot:nth-child(3) { animation-delay: 0.3s; }
+    .bahi-typing-dot:nth-child(2) { animation-delay: 0.15s; }
+    .bahi-typing-dot:nth-child(3) { animation-delay: 0.3s; }
 
-    @keyframes navi-bounce {
+    @keyframes bahi-bounce {
       0%, 60%, 100% { transform: translateY(0); }
       30% { transform: translateY(-4px); }
     }
 
     /* ── Input Area ── */
-    #navi-input-area {
+    #bahi-input-area {
       padding: 12px 16px;
       border-top: 1px solid #eee;
       display: flex;
@@ -388,7 +388,7 @@
       background: white;
     }
 
-    #navi-input {
+    #bahi-input {
       flex: 1;
       border: 1px solid #e0e0e5;
       border-radius: 12px;
@@ -400,16 +400,16 @@
       background: #fafafa;
     }
 
-    #navi-input:focus {
+    #bahi-input:focus {
       border-color: #1a1a2e;
       background: #fff;
     }
 
-    #navi-input::placeholder {
+    #bahi-input::placeholder {
       color: #aaa;
     }
 
-    #navi-send {
+    #bahi-send {
       width: 38px;
       height: 38px;
       border-radius: 12px;
@@ -423,26 +423,26 @@
       flex-shrink: 0;
     }
 
-    #navi-send:hover {
+    #bahi-send:hover {
       opacity: 0.85;
     }
 
-    #navi-send.loading {
+    #bahi-send.loading {
       background: #ef4444;
     }
 
-    #navi-send:disabled {
+    #bahi-send:disabled {
       opacity: 0.4;
       cursor: not-allowed;
     }
 
-    #navi-send svg {
+    #bahi-send svg {
       width: 16px;
       height: 16px;
       fill: white;
     }
 
-    #navi-mic {
+    #bahi-mic {
       width: 38px;
       height: 38px;
       border-radius: 12px;
@@ -457,30 +457,30 @@
       flex-shrink: 0;
     }
 
-    #navi-mic:hover {
+    #bahi-mic:hover {
       background: #e0e7ff;
     }
 
-    #navi-mic.listening {
+    #bahi-mic.listening {
       background: #ef4444;
       border-color: #ef4444;
       color: white;
       box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.12);
     }
 
-    #navi-mic:disabled {
+    #bahi-mic:disabled {
       opacity: 0.4;
       cursor: not-allowed;
     }
 
-    #navi-mic svg {
+    #bahi-mic svg {
       width: 16px;
       height: 16px;
       fill: currentColor;
     }
 
     /* ── Welcome Message ── */
-    .navi-welcome {
+    .bahi-welcome {
       text-align: center;
       padding: 24px 16px;
       color: #888;
@@ -488,17 +488,17 @@
       line-height: 1.6;
     }
 
-    .navi-welcome-emoji {
+    .bahi-welcome-emoji {
       font-size: 28px;
       margin-bottom: 8px;
     }
 
-    .navi-welcome strong {
+    .bahi-welcome strong {
       color: #1a1a2e;
       font-weight: 600;
     }
 
-    .navi-suggestions {
+    .bahi-suggestions {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
@@ -506,7 +506,7 @@
       margin-top: 16px;
     }
 
-    .navi-suggestion {
+    .bahi-suggestion {
       border: 1px solid #d7d7df;
       background: white;
       color: #1a1a2e;
@@ -517,12 +517,12 @@
       transition: all 0.15s ease;
     }
 
-    .navi-suggestion:hover {
+    .bahi-suggestion:hover {
       border-color: #1a1a2e;
       transform: translateY(-1px);
     }
 
-    .navi-system {
+    .bahi-system {
       align-self: center;
       background: #eef2ff;
       color: #334155;
@@ -534,7 +534,7 @@
     }
 
     /* ── Powered By ── */
-    #navi-footer {
+    #bahi-footer {
       padding: 6px;
       text-align: center;
       font-size: 10px;
@@ -544,7 +544,7 @@
 
     /* ── Mobile ── */
     @media (max-width: 480px) {
-      #navi-chat {
+      #bahi-chat {
         width: calc(100vw - 16px);
         height: calc(100vh - 120px);
         right: 8px;
@@ -560,10 +560,10 @@
   // ─────────────────────────────────────────
 
   const container = document.createElement("div");
-  container.id = "navi-widget-container";
+  container.id = "bahi-widget-container";
   container.innerHTML = `
     <!-- Floating Action Button -->
-    <button id="navi-fab" aria-label="Open Navi chat">
+    <button id="bahi-fab" aria-label="Open Bahi chat">
       <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
         <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.2L4 17.2V4h16v12z"/>
         <path d="M7 9h2v2H7zm4 0h2v2h-2zm4 0h2v2h-2z"/>
@@ -571,33 +571,33 @@
     </button>
 
     <!-- Chat Window -->
-    <div id="navi-chat">
+    <div id="bahi-chat">
       <!-- Header -->
-      <div id="navi-header">
-        <div id="navi-header-main">
-          <div id="navi-header-icon">
+      <div id="bahi-header">
+        <div id="bahi-header-main">
+          <div id="bahi-header-icon">
             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
               <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
             </svg>
           </div>
-          <div id="navi-header-info">
+          <div id="bahi-header-info">
             <h3>${WIDGET_TITLE}</h3>
             <p>AI Copilot</p>
           </div>
         </div>
-        <div id="navi-header-controls">
-          <select id="navi-language" aria-label="Language">
+        <div id="bahi-header-controls">
+          <select id="bahi-language" aria-label="Language">
             ${Object.entries(LANGUAGES).map(
               ([code, label]) =>
                 `<option value="${code}" ${code === selectedLanguage ? "selected" : ""}>${label}</option>`
             ).join("")}
           </select>
-          <button id="navi-clear-chat" class="navi-icon-btn" type="button" aria-label="Clear chat">
+          <button id="bahi-clear-chat" class="bahi-icon-btn" type="button" aria-label="Clear chat">
             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
               <path d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v8h-2V9zm4 0h2v8h-2V9zM7 9h2v8H7V9zm-1 12h12a2 2 0 0 0 2-2V8H4v11a2 2 0 0 0 2 2z"/>
             </svg>
           </button>
-          <button id="navi-voice-toggle" class="navi-icon-btn" type="button" aria-label="Toggle voice replies">
+          <button id="bahi-voice-toggle" class="bahi-icon-btn" type="button" aria-label="Toggle voice replies">
             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
               <path d="M14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77zm-2 5.77-3-3v12l3-3h4V9h-4z"/>
             </svg>
@@ -606,37 +606,37 @@
       </div>
 
       <!-- Messages -->
-      <div id="navi-messages">
-        <div class="navi-welcome">
-          <div class="navi-welcome-emoji">👋</div>
+      <div id="bahi-messages">
+        <div class="bahi-welcome">
+          <div class="bahi-welcome-emoji">👋</div>
           <strong>Hi! I'm ${WIDGET_TITLE}.</strong><br>
           I can help with invoices and inventory in ERPNext, by text or voice.<br>
           Try one of these demo prompts:
-          <div class="navi-suggestions">
+          <div class="bahi-suggestions">
             ${SUGGESTIONS.map(
               (suggestion) =>
-                `<button class="navi-suggestion" type="button" data-suggestion="${suggestion.replace(/"/g, "&quot;")}">${suggestion}</button>`
+                `<button class="bahi-suggestion" type="button" data-suggestion="${suggestion.replace(/"/g, "&quot;")}">${suggestion}</button>`
             ).join("")}
           </div>
         </div>
       </div>
 
       <!-- Input -->
-      <div id="navi-input-area">
-        <input id="navi-input" type="text" placeholder="Type a message..." autocomplete="off" />
-        <button id="navi-mic" type="button" aria-label="Start voice input">
+      <div id="bahi-input-area">
+        <input id="bahi-input" type="text" placeholder="Type a message..." autocomplete="off" />
+        <button id="bahi-mic" type="button" aria-label="Start voice input">
           <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
             <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3zm5-3a1 1 0 1 0-2 0 3 3 0 1 1-6 0 1 1 0 1 0-2 0 5 5 0 0 0 4 4.9V20H9a1 1 0 0 0 0 2h6a1 1 0 0 0 0-2h-2v-2.1A5 5 0 0 0 17 11z"/>
           </svg>
         </button>
-        <button id="navi-send" aria-label="Send message">
+        <button id="bahi-send" aria-label="Send message">
           <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
             <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
           </svg>
         </button>
       </div>
 
-      <div id="navi-footer">Powered by Navi AI</div>
+      <div id="bahi-footer">Powered by Bahi AI</div>
     </div>
   `;
   document.body.appendChild(container);
@@ -645,15 +645,15 @@
   // ELEMENTS
   // ─────────────────────────────────────────
 
-  const fab = document.getElementById("navi-fab");
-  const chat = document.getElementById("navi-chat");
-  const messagesDiv = document.getElementById("navi-messages");
-  const input = document.getElementById("navi-input");
-  const micBtn = document.getElementById("navi-mic");
-  const sendBtn = document.getElementById("navi-send");
-  const languageSelect = document.getElementById("navi-language");
-  const clearChatBtn = document.getElementById("navi-clear-chat");
-  const voiceToggleBtn = document.getElementById("navi-voice-toggle");
+  const fab = document.getElementById("bahi-fab");
+  const chat = document.getElementById("bahi-chat");
+  const messagesDiv = document.getElementById("bahi-messages");
+  const input = document.getElementById("bahi-input");
+  const micBtn = document.getElementById("bahi-mic");
+  const sendBtn = document.getElementById("bahi-send");
+  const languageSelect = document.getElementById("bahi-language");
+  const clearChatBtn = document.getElementById("bahi-clear-chat");
+  const voiceToggleBtn = document.getElementById("bahi-voice-toggle");
 
   function persistState() {
     try {
@@ -668,21 +668,21 @@
         })
       );
     } catch (error) {
-      console.warn("Navi state persistence failed:", error);
+      console.warn("Bahi state persistence failed:", error);
     }
   }
 
   function getWelcomeMarkup() {
     return `
-      <div class="navi-welcome">
-        <div class="navi-welcome-emoji">👋</div>
+      <div class="bahi-welcome">
+        <div class="bahi-welcome-emoji">👋</div>
         <strong>Hi! I'm ${WIDGET_TITLE}.</strong><br>
         I can help with invoices and inventory in ERPNext, by text or voice.<br>
         Try one of these demo prompts:
-        <div class="navi-suggestions">
+        <div class="bahi-suggestions">
           ${SUGGESTIONS.map(
             (suggestion) =>
-              `<button class="navi-suggestion" type="button" data-suggestion="${suggestion.replace(/"/g, "&quot;")}">${suggestion}</button>`
+              `<button class="bahi-suggestion" type="button" data-suggestion="${suggestion.replace(/"/g, "&quot;")}">${suggestion}</button>`
           ).join("")}
         </div>
       </div>
@@ -750,13 +750,13 @@
 
   function addMessage(text, sender) {
     // Remove welcome message on first real message
-    const welcome = messagesDiv.querySelector(".navi-welcome");
+    const welcome = messagesDiv.querySelector(".bahi-welcome");
     if (welcome) welcome.remove();
 
     const row = document.createElement("div");
-    row.className = `navi-msg-row navi-msg-row-${sender}`;
+    row.className = `bahi-msg-row bahi-msg-row-${sender}`;
     const msg = document.createElement("div");
-    msg.className = `navi-msg navi-msg-${sender}`;
+    msg.className = `bahi-msg bahi-msg-${sender}`;
 
     // Simple markdown-like formatting for bot messages
     if (sender === "bot") {
@@ -769,7 +769,7 @@
     }
 
     const avatar = document.createElement("div");
-    avatar.className = `navi-avatar navi-avatar-${sender}`;
+    avatar.className = `bahi-avatar bahi-avatar-${sender}`;
     if (sender === "bot") {
       avatar.textContent = "N";
       row.appendChild(avatar);
@@ -793,28 +793,28 @@
 
   function showTyping() {
     const typing = document.createElement("div");
-    typing.className = "navi-typing";
-    typing.id = "navi-typing-indicator";
+    typing.className = "bahi-typing";
+    typing.id = "bahi-typing-indicator";
     typing.innerHTML = `
-      <div class="navi-typing-dot"></div>
-      <div class="navi-typing-dot"></div>
-      <div class="navi-typing-dot"></div>
+      <div class="bahi-typing-dot"></div>
+      <div class="bahi-typing-dot"></div>
+      <div class="bahi-typing-dot"></div>
     `;
     messagesDiv.appendChild(typing);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
   }
 
   function removeTyping() {
-    const typing = document.getElementById("navi-typing-indicator");
+    const typing = document.getElementById("bahi-typing-indicator");
     if (typing) typing.remove();
   }
 
   function addSystemMessage(text) {
-    const welcome = messagesDiv.querySelector(".navi-welcome");
+    const welcome = messagesDiv.querySelector(".bahi-welcome");
     if (welcome) welcome.remove();
 
     const msg = document.createElement("div");
-    msg.className = "navi-system";
+    msg.className = "bahi-system";
     msg.textContent = text;
     messagesDiv.appendChild(msg);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
@@ -824,13 +824,13 @@
   }
 
   function addNavigationMessage(path, description) {
-    const welcome = messagesDiv.querySelector(".navi-welcome");
+    const welcome = messagesDiv.querySelector(".bahi-welcome");
     if (welcome) welcome.remove();
 
     const row = document.createElement("div");
-    row.className = "navi-msg-row navi-msg-row-nav";
+    row.className = "bahi-msg-row bahi-msg-row-nav";
     const msg = document.createElement("div");
-    msg.className = "navi-msg navi-msg-nav";
+    msg.className = "bahi-msg bahi-msg-nav";
     msg.innerHTML = `
       <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="#111827" xmlns="http://www.w3.org/2000/svg">
@@ -841,7 +841,7 @@
       <span style="font-size:12px; color:#111827;">${description || path}</span>
     `;
     const avatar = document.createElement("div");
-    avatar.className = "navi-avatar navi-avatar-bot";
+    avatar.className = "bahi-avatar bahi-avatar-bot";
     avatar.textContent = "N";
     row.appendChild(avatar);
     row.appendChild(msg);
@@ -855,16 +855,16 @@
   function renderTranscript() {
     if (!transcript.length) return;
 
-    const welcome = messagesDiv.querySelector(".navi-welcome");
+    const welcome = messagesDiv.querySelector(".bahi-welcome");
     if (welcome) welcome.remove();
     messagesDiv.innerHTML = "";
 
     transcript.forEach(function (entry) {
       if (entry.type === "message") {
         const row = document.createElement("div");
-        row.className = `navi-msg-row navi-msg-row-${entry.sender}`;
+        row.className = `bahi-msg-row bahi-msg-row-${entry.sender}`;
         const msg = document.createElement("div");
-        msg.className = `navi-msg navi-msg-${entry.sender}`;
+        msg.className = `bahi-msg bahi-msg-${entry.sender}`;
         if (entry.sender === "bot") {
           const text = entry.text
             .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
@@ -874,7 +874,7 @@
           msg.textContent = entry.text;
         }
         const avatar = document.createElement("div");
-        avatar.className = `navi-avatar navi-avatar-${entry.sender}`;
+        avatar.className = `bahi-avatar bahi-avatar-${entry.sender}`;
         if (entry.sender === "bot") {
           avatar.textContent = "N";
           row.appendChild(avatar);
@@ -891,14 +891,14 @@
         messagesDiv.appendChild(row);
       } else if (entry.type === "system") {
         const msg = document.createElement("div");
-        msg.className = "navi-system";
+        msg.className = "bahi-system";
         msg.textContent = entry.text;
         messagesDiv.appendChild(msg);
       } else if (entry.type === "navigation") {
         const row = document.createElement("div");
-        row.className = "navi-msg-row navi-msg-row-nav";
+        row.className = "bahi-msg-row bahi-msg-row-nav";
         const msg = document.createElement("div");
-        msg.className = "navi-msg navi-msg-nav";
+        msg.className = "bahi-msg bahi-msg-nav";
         msg.innerHTML = `
           <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="#111827" xmlns="http://www.w3.org/2000/svg">
@@ -909,7 +909,7 @@
           <span style="font-size:12px; color:#111827;">${entry.description || entry.path}</span>
         `;
         const avatar = document.createElement("div");
-        avatar.className = "navi-avatar navi-avatar-bot";
+        avatar.className = "bahi-avatar bahi-avatar-bot";
         avatar.textContent = "N";
         row.appendChild(avatar);
         row.appendChild(msg);
@@ -997,7 +997,7 @@
       };
       await currentAudio.play();
     } catch (error) {
-      console.warn("Navi TTS fallback:", error);
+      console.warn("Bahi TTS fallback:", error);
       speakReplyWithBrowser(spokenText);
     }
   }
@@ -1140,7 +1140,7 @@
         );
       } else {
         addMessage("Sorry, something went wrong. Please try again.", "bot");
-        console.error("Navi error:", error);
+        console.error("Bahi error:", error);
       }
     } finally {
       currentChatController = null;
@@ -1246,7 +1246,7 @@
   });
 
   messagesDiv.addEventListener("click", function (event) {
-    var suggestion = event.target.closest(".navi-suggestion");
+    var suggestion = event.target.closest(".bahi-suggestion");
     if (!suggestion) return;
     sendPresetMessage(suggestion.getAttribute("data-suggestion"));
   });

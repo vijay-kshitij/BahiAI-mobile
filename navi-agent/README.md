@@ -1,4 +1,4 @@
-# Navi AI Agent — MVP
+# Bahi AI Agent — MVP
 
 An AI copilot that lets users control ERPNext through chat.
 Type what you want instead of clicking through menus.
@@ -7,17 +7,17 @@ Type what you want instead of clicking through menus.
 
 ```
 You: Create a customer named Priya Patel
-Navi: ✅ Customer "Priya Patel" has been created.
+Akash: ✅ Customer "Priya Patel" has been created.
 
 You: Show me all customers
-Navi: Here are your customers:
+Akash: Here are your customers:
       1. Rajesh Sharma
       2. Priya Patel
       3. Grant Plastics Ltd.
       ...
 
 You: Delete the customer Rajesh Sharma
-Navi: Are you sure you want to delete customer "Rajesh Sharma"? 
+Akash: Are you sure you want to delete customer "Rajesh Sharma"? 
       This action cannot be undone.
 ```
 

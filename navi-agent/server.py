@@ -1,5 +1,5 @@
 """
-Navi Server
+Bahi Server
 A FastAPI backend that serves the AI agent via HTTP API.
 The chat UI talks to this server, which talks to Claude and ERPNext.
 """
@@ -11,7 +11,7 @@ import re
 import uuid
 from urllib.parse import quote
 
-log = logging.getLogger("navi.server")
+log = logging.getLogger("bahi.server")
 
 import anthropic
 import requests
@@ -37,7 +37,7 @@ from navi_core import (
 
 load_dotenv()
 
-app = FastAPI(title="Navi AI Agent API")
+app = FastAPI(title="Bahi AI Agent API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -725,7 +725,7 @@ async def voice_transcribe(
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "navi-agent"}
+    return {"status": "ok", "service": "bahi-agent"}
 
 
 @app.get("/api/invoice/{name}/pdf")

@@ -1,5 +1,5 @@
 """
-Seed script — populates ERPNext with demo data for the Navi invoicing MVP.
+Seed script — populates ERPNext with demo data for the Bahi invoicing MVP.
 Run once after a fresh ERPNext setup:
 
     source venv/bin/activate
@@ -176,7 +176,7 @@ def main():
         except Exception as e:
             print(f"  ! Payment failed: {e}")
 
-    print("\nDone! Your ERPNext now has demo data for the Navi invoicing demo.")
+    print("\nDone! Your ERPNext now has demo data for the Bahi invoicing demo.")
     print("  - 6 customers")
     print("  - 8 items")
     print(f"  - {len(created_invoices)} invoices (1 partly paid, 1 overdue)")

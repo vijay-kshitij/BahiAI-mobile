@@ -1,6 +1,6 @@
 """
-Navi AI Agent
-Terminal chat client for the Navi ERPNext copilot.
+Bahi AI Agent
+Terminal chat client for the Bahi ERPNext copilot.
 """
 
 import os
@@ -24,7 +24,7 @@ load_dotenv()
 
 
 def main():
-    print("\nStarting Navi AI Agent...")
+    print("\nStarting Bahi AI Agent...")
     print("-" * 50)
 
     erp_client = ERPNextClient(
@@ -36,7 +36,7 @@ def main():
 
     print("Connected to Claude AI")
     print("-" * 50)
-    print("\nNavi is ready. Type your message or 'quit' to exit.\n")
+    print("\nAkash is ready. Type your message or 'quit' to exit.\n")
 
     messages = []
     pending_action = None
@@ -59,7 +59,7 @@ def main():
                 reply = format_confirmed_action_result(result)
                 messages.append({"role": "user", "content": user_input})
                 messages.append({"role": "assistant", "content": reply})
-                print(f"\nNavi: {reply}\n")
+                print(f"\nAkash: {reply}\n")
                 continue
 
             if is_negative(user_input):
@@ -67,13 +67,13 @@ def main():
                 reply = "Okay, I canceled that action."
                 messages.append({"role": "user", "content": user_input})
                 messages.append({"role": "assistant", "content": reply})
-                print(f"\nNavi: {reply}\n")
+                print(f"\nAkash: {reply}\n")
                 continue
 
             reply = "I am waiting for confirmation. Reply yes to continue or no to cancel."
             messages.append({"role": "user", "content": user_input})
             messages.append({"role": "assistant", "content": reply})
-            print(f"\nNavi: {reply}\n")
+            print(f"\nAkash: {reply}\n")
             continue
 
         messages.append({"role": "user", "content": user_input})
@@ -120,7 +120,7 @@ def main():
         final_text = "".join(
             block.text for block in response.content if hasattr(block, "text")
         )
-        print(f"\nNavi: {final_text}\n")
+        print(f"\nAkash: {final_text}\n")
         messages.append({"role": "assistant", "content": response.content})
 
 
