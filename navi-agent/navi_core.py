@@ -981,7 +981,10 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
             resolved_taxes = None
             tax_template = tool_input.get("tax_template")
             if tax_template:
-                template_name = tax_template if tax_template.endswith(" - ND") else f"{tax_template} - ND"
+                companies = erp_client.get_list("Company", fields=["abbr"], limit=1)
+                abbr = companies[0]["abbr"] if companies else "BD"
+                suffix = f" - {abbr}"
+                template_name = tax_template if tax_template.endswith(suffix) else f"{tax_template}{suffix}"
                 try:
                     tmpl_doc = erp_client.get_document("Sales Taxes and Charges Template", template_name)
                     resolved_taxes = {
