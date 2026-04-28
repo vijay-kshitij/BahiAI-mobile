@@ -19,7 +19,7 @@ log = logging.getLogger("bahi.server")
 import anthropic
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -75,21 +75,32 @@ def _conv_path(conversation_id: str) -> Path:
     return CONVERSATIONS_DIR / f"{safe_id}.json"
 
 
-def _serialize_content(content):
+def _clean_block(block):
+    if hasattr(block, "type"):
+        if block.type == "text":
+            return {"type": "text", "text": block.text}
+        if block.type == "tool_use":
+            return {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+    if isinstance(block, dict):
+        if block.get("type") == "text":
+            return {"type": "text", "text": block["text"]}
+        if block.get("type") == "tool_use":
+            return {"type": "tool_use", "id": block["id"], "name": block["name"], "input": block["input"]}
+    return block
+
+
+def _clean_content(content):
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return [
-            item.model_dump() if hasattr(item, "model_dump") else item
-            for item in content
-        ]
+        return [_clean_block(item) for item in content]
     return content
 
 
 def _save_conversation(conversation_id: str, state: dict):
     serialized = {
         "messages": [
-            {"role": m["role"], "content": _serialize_content(m["content"])}
+            {"role": m["role"], "content": _clean_content(m["content"])}
             for m in state["messages"][-MAX_MESSAGES_PER_CONVERSATION:]
         ],
         "pending_action": state.get("pending_action"),
@@ -636,7 +647,7 @@ async def chat(request: ChatRequest):
     actions = []
 
     while response.stop_reason == "tool_use":
-        messages.append({"role": "assistant", "content": response.content})
+        messages.append({"role": "assistant", "content": _clean_content(response.content)})
 
         tool_results = []
         for block in response.content:
@@ -683,7 +694,7 @@ async def chat(request: ChatRequest):
     )
     spoken_reply = fallback_spoken_reply(final_text, state["language"])
 
-    messages.append({"role": "assistant", "content": response.content})
+    messages.append({"role": "assistant", "content": _clean_content(response.content)})
     _save_conversation(conversation_id, state)
     return ChatResponse(
         reply=final_text,
@@ -786,7 +797,7 @@ async def chat_stream(request: ChatRequest):
             if response.stop_reason != "tool_use":
                 break
 
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "assistant", "content": _clean_content(response.content)})
             tool_results = []
             for block in response.content:
                 if block.type != "tool_use":
@@ -821,7 +832,7 @@ async def chat_stream(request: ChatRequest):
         for act in actions:
             yield _sse("action", act)
 
-        messages.append({"role": "assistant", "content": response.content})
+        messages.append({"role": "assistant", "content": _clean_content(response.content)})
         _save_conversation(conversation_id, state)
 
         yield _sse("done", {
