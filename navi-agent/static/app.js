@@ -14,7 +14,7 @@
 
   // ── State ──
   let persisted = {};
-  try { persisted = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || "{}"); } catch (_) { persisted = {}; }
+  try { persisted = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch (_) { persisted = {}; }
 
   let conversationId = persisted.conversationId || null;
   let selectedLanguage = persisted.selectedLanguage && persisted.selectedLanguage in LANGUAGES
@@ -49,7 +49,7 @@
   // ── Persistence ──
   function save() {
     try {
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
         conversationId: conversationId,
         selectedLanguage: selectedLanguage,
         voiceEnabled: voiceEnabled,
