@@ -5,10 +5,13 @@ The chat UI talks to this server, which talks to Claude and ERPNext.
 """
 
 import base64
+import json as _json
 import logging
 import os
 import re
+import time
 import uuid
+from pathlib import Path
 from urllib.parse import quote
 
 log = logging.getLogger("bahi.server")
@@ -58,8 +61,69 @@ SARVAM_TTS_MODEL = os.getenv("SARVAM_TTS_MODEL", "bulbul:v3")
 SARVAM_STT_MODEL = os.getenv("SARVAM_STT_MODEL", "saaras:v3")
 SARVAM_TTS_SPEAKER = os.getenv("SARVAM_TTS_SPEAKER", "shubh")
 
-# In-memory conversation state for the MVP.
+# ── Persistent conversation store ──
+CONVERSATIONS_DIR = Path(__file__).parent / "conversations"
+CONVERSATIONS_DIR.mkdir(exist_ok=True)
+MAX_MESSAGES_PER_CONVERSATION = 80
+CONVERSATION_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+
 conversations: dict[str, dict] = {}
+
+
+def _conv_path(conversation_id: str) -> Path:
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", conversation_id)
+    return CONVERSATIONS_DIR / f"{safe_id}.json"
+
+
+def _serialize_content(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return [
+            item.model_dump() if hasattr(item, "model_dump") else item
+            for item in content
+        ]
+    return content
+
+
+def _save_conversation(conversation_id: str, state: dict):
+    serialized = {
+        "messages": [
+            {"role": m["role"], "content": _serialize_content(m["content"])}
+            for m in state["messages"][-MAX_MESSAGES_PER_CONVERSATION:]
+        ],
+        "pending_action": state.get("pending_action"),
+        "pending_send": state.get("pending_send"),
+        "language": state.get("language", "en-IN"),
+        "updated_at": time.time(),
+    }
+    try:
+        _conv_path(conversation_id).write_text(
+            _json.dumps(serialized, default=str, ensure_ascii=False)
+        )
+    except Exception as e:
+        log.warning("Failed to save conversation %s: %s", conversation_id, e)
+
+
+def _load_conversation(conversation_id: str) -> dict | None:
+    path = _conv_path(conversation_id)
+    if not path.exists():
+        return None
+    try:
+        data = _json.loads(path.read_text())
+        age = time.time() - data.get("updated_at", 0)
+        if age > CONVERSATION_TTL_SECONDS:
+            path.unlink(missing_ok=True)
+            return None
+        return {
+            "messages": data.get("messages", []),
+            "pending_action": data.get("pending_action"),
+            "pending_send": data.get("pending_send"),
+            "language": data.get("language", "en-IN"),
+        }
+    except Exception as e:
+        log.warning("Failed to load conversation %s: %s", conversation_id, e)
+        return None
 
 
 class ChatRequest(BaseModel):
@@ -83,12 +147,16 @@ class TTSRequest(BaseModel):
 
 def get_conversation_state(conversation_id: str) -> dict:
     if conversation_id not in conversations:
-        conversations[conversation_id] = {
-            "messages": [],
-            "pending_action": None,
-            "pending_send": None,
-            "language": "en-IN",
-        }
+        loaded = _load_conversation(conversation_id)
+        if loaded:
+            conversations[conversation_id] = loaded
+        else:
+            conversations[conversation_id] = {
+                "messages": [],
+                "pending_action": None,
+                "pending_send": None,
+                "language": "en-IN",
+            }
     return conversations[conversation_id]
 
 
@@ -533,6 +601,7 @@ async def chat(request: ChatRequest):
     pending_result = handle_pending_action(state, request.message)
     if pending_result is not None:
         pending_reply, pending_spoken_reply, pending_actions = pending_result
+        _save_conversation(conversation_id, state)
         return ChatResponse(
             reply=pending_reply,
             spoken_reply=pending_spoken_reply or pending_reply,
@@ -543,6 +612,7 @@ async def chat(request: ChatRequest):
 
     send_reply, send_spoken_reply, send_actions = handle_pending_send(state, request.message)
     if send_reply is not None:
+        _save_conversation(conversation_id, state)
         return ChatResponse(
             reply=send_reply,
             spoken_reply=send_spoken_reply or send_reply,
@@ -614,6 +684,7 @@ async def chat(request: ChatRequest):
     spoken_reply = generate_spoken_reply(final_text, state["language"])
 
     messages.append({"role": "assistant", "content": response.content})
+    _save_conversation(conversation_id, state)
     return ChatResponse(
         reply=final_text,
         spoken_reply=spoken_reply,
@@ -878,10 +949,13 @@ async def get_customer(name: str):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+
+
 @app.get("/invoice/{name}")
 async def invoice_page(name: str):
     """Serve the invoice detail page."""
-    return FileResponse("static/invoice.html", media_type="text/html")
+    return FileResponse("static/invoice.html", media_type="text/html", headers=NO_CACHE)
 
 
 @app.get("/api/customers")
@@ -911,24 +985,24 @@ async def list_customers(limit: int = 50):
 @app.get("/invoices")
 async def invoices_page():
     """Serve the invoice list page."""
-    return FileResponse("static/invoices.html", media_type="text/html")
+    return FileResponse("static/invoices.html", media_type="text/html", headers=NO_CACHE)
 
 
 @app.get("/customers")
 async def customers_page():
     """Serve the customers list page."""
-    return FileResponse("static/customers.html", media_type="text/html")
+    return FileResponse("static/customers.html", media_type="text/html", headers=NO_CACHE)
 
 
 @app.get("/customer/{name}")
 async def customer_page(name: str):
     """Serve the customer detail page."""
-    return FileResponse("static/customer.html", media_type="text/html")
+    return FileResponse("static/customer.html", media_type="text/html", headers=NO_CACHE)
 
 
 @app.get("/")
 async def root():
-    return FileResponse("static/index.html", media_type="text/html")
+    return FileResponse("static/index.html", media_type="text/html", headers=NO_CACHE)
 
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
