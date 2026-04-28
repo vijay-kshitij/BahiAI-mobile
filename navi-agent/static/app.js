@@ -623,7 +623,6 @@
   function clearChat() {
     stopListening();
     stopSpeaking();
-    conversationId = null;
     chatTranscript = [];
     setPending(null);
     messagesEl.innerHTML = renderWelcome();
