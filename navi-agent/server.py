@@ -19,9 +19,9 @@ log = logging.getLogger("bahi.server")
 import anthropic
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -464,7 +464,7 @@ def handle_pending_action(state: dict, user_message: str) -> tuple[str | None, s
         else:
             reply = format_confirmed_action_result_for_language(result, language)
 
-        spoken_reply = generate_spoken_reply(reply, language)
+        spoken_reply = fallback_spoken_reply(reply, language)
         state["messages"].append({"role": "user", "content": user_message})
         state["messages"].append({"role": "assistant", "content": reply})
         return reply, spoken_reply, actions
@@ -681,7 +681,7 @@ async def chat(request: ChatRequest):
     final_text = "".join(
         block.text for block in response.content if hasattr(block, "text")
     )
-    spoken_reply = generate_spoken_reply(final_text, state["language"])
+    spoken_reply = fallback_spoken_reply(final_text, state["language"])
 
     messages.append({"role": "assistant", "content": response.content})
     _save_conversation(conversation_id, state)
@@ -692,6 +692,145 @@ async def chat(request: ChatRequest):
         actions=actions,
         pending=make_pending_payload(state),
     )
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {_json.dumps(data, default=str, ensure_ascii=False)}\n\n"
+
+
+def _split_sentences(text: str) -> list[str]:
+    parts = re.split(r'(?<=[.!?।])\s+', text)
+    return [p for p in parts if p.strip()]
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """SSE streaming chat endpoint."""
+
+    conversation_id = request.conversation_id or str(uuid.uuid4())
+    state = get_conversation_state(conversation_id)
+    state["language"] = request.language or state.get("language", "en-IN")
+
+    pending_result = handle_pending_action(state, request.message)
+    if pending_result is not None:
+        pending_reply, pending_spoken_reply, pending_actions = pending_result
+        _save_conversation(conversation_id, state)
+
+        def pending_gen():
+            yield _sse("token", {"text": pending_reply})
+            for act in pending_actions:
+                yield _sse("action", act)
+            tts_text = fallback_spoken_reply(pending_reply, state["language"])
+            if tts_text.strip():
+                yield _sse("tts", {"text": tts_text, "index": 0})
+            yield _sse("done", {
+                "conversation_id": conversation_id,
+                "pending": make_pending_payload(state),
+                "full_text": pending_reply,
+            })
+
+        return StreamingResponse(pending_gen(), media_type="text/event-stream")
+
+    send_reply, send_spoken_reply, send_actions = handle_pending_send(state, request.message)
+    if send_reply is not None:
+        _save_conversation(conversation_id, state)
+
+        def send_gen():
+            yield _sse("token", {"text": send_reply})
+            for act in send_actions:
+                yield _sse("action", act)
+            tts_text = fallback_spoken_reply(send_reply, state["language"])
+            if tts_text.strip():
+                yield _sse("tts", {"text": tts_text, "index": 0})
+            yield _sse("done", {
+                "conversation_id": conversation_id,
+                "pending": make_pending_payload(state),
+                "full_text": send_reply,
+            })
+
+        return StreamingResponse(send_gen(), media_type="text/event-stream")
+
+    def stream_gen():
+        messages = state["messages"]
+        messages.append({"role": "user", "content": request.message})
+
+        full_text = ""
+        actions = []
+        sentence_buffer = ""
+        tts_index = 0
+
+        while True:
+            with claude_client.messages.stream(
+                model=MODEL_NAME,
+                max_tokens=4096,
+                system=build_system_prompt(state["language"]),
+                tools=TOOLS,
+                messages=messages,
+            ) as stream:
+                for chunk in stream.text_stream:
+                    full_text += chunk
+                    sentence_buffer += chunk
+                    yield _sse("token", {"text": chunk})
+
+                    sentences = _split_sentences(sentence_buffer)
+                    if len(sentences) > 1:
+                        for s in sentences[:-1]:
+                            tts_text = fallback_spoken_reply(s, state["language"])
+                            if tts_text.strip():
+                                yield _sse("tts", {"text": tts_text, "index": tts_index})
+                                tts_index += 1
+                        sentence_buffer = sentences[-1]
+
+                response = stream.get_final_message()
+
+            if response.stop_reason != "tool_use":
+                break
+
+            messages.append({"role": "assistant", "content": response.content})
+            tool_results = []
+            for block in response.content:
+                if block.type != "tool_use":
+                    continue
+                result = execute_tool(block.name, block.input, erp_client)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": json_result(result),
+                })
+                if result.get("status") == "confirmation_required":
+                    state["pending_action"] = {
+                        "tool_name": result.get("tool_name", block.name),
+                        "tool_input": result.get("pending_input", block.input),
+                    }
+                else:
+                    actions.extend(extract_card_actions(result))
+
+            messages.append({"role": "user", "content": tool_results})
+
+        if sentence_buffer.strip():
+            tts_text = fallback_spoken_reply(sentence_buffer, state["language"])
+            if tts_text.strip():
+                yield _sse("tts", {"text": tts_text, "index": tts_index})
+
+        if state.get("pending_action"):
+            actions = []
+
+        transient = state.pop("transient_actions", [])
+        actions = transient + actions
+
+        for act in actions:
+            yield _sse("action", act)
+
+        messages.append({"role": "assistant", "content": response.content})
+        _save_conversation(conversation_id, state)
+
+        yield _sse("done", {
+            "conversation_id": conversation_id,
+            "pending": make_pending_payload(state),
+            "full_text": full_text,
+        })
+
+    return StreamingResponse(stream_gen(), media_type="text/event-stream")
 
 
 @app.post("/api/tts")

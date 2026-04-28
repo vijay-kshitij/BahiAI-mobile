@@ -375,52 +375,12 @@
 
   function stopSpeaking() {
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    clearTTSQueue();
     if (currentAudio) {
       try { currentAudio.pause(); currentAudio.currentTime = 0; } catch (_) {}
       currentAudio = null;
     }
     if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
-  }
-
-  function speakBrowser(text) {
-    if (!("speechSynthesis" in window)) return;
-    var clean = text.replace(/\*\*/g, "").replace(/<br>/g, " ").replace(/\s+/g, " ").trim();
-    if (!clean) return;
-    var utt = new SpeechSynthesisUtterance(clean);
-    utt.lang = selectedLanguage;
-    window.speechSynthesis.speak(utt);
-  }
-
-  async function speakReply(text) {
-    if (!voiceEnabled) return;
-    stopSpeaking();
-    var clean = text.replace(/\*\*/g, "").replace(/<br>/g, " ").replace(/\s+/g, " ").trim();
-    if (!clean) return;
-
-    try {
-      var resp = await fetch(SERVER_URL + "/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: clean, language: selectedLanguage }),
-      });
-      if (!resp.ok) throw new Error("TTS " + resp.status);
-      var blob = await resp.blob();
-      var url = URL.createObjectURL(blob);
-      currentAudioUrl = url;
-      if (!primedPlayer) primedPlayer = new Audio();
-      currentAudio = primedPlayer;
-      currentAudio.onended = function () { if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; } currentAudio = null; };
-      currentAudio.onerror = function () { if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; } currentAudio = null; speakBrowser(clean); };
-      currentAudio.src = url;
-      try {
-        await currentAudio.play();
-      } catch (playErr) {
-        console.warn("Audio play rejected:", playErr);
-        speakBrowser(clean);
-      }
-    } catch (_) {
-      speakBrowser(clean);
-    }
   }
 
   // ── Voice input ──
@@ -556,6 +516,94 @@
     }
   }
 
+  // ── TTS queue ──
+  var ttsQueue = [];
+  var ttsPlaying = false;
+
+  function queueTTS(text) {
+    if (!voiceEnabled) return;
+    ttsQueue.push(text);
+    if (!ttsPlaying) playNextTTS();
+  }
+
+  async function playNextTTS() {
+    if (!ttsQueue.length || !voiceEnabled) { ttsPlaying = false; return; }
+    ttsPlaying = true;
+    var text = ttsQueue.shift();
+    try {
+      var resp = await fetch(SERVER_URL + "/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text, language: selectedLanguage }),
+      });
+      if (!resp.ok) throw new Error("TTS " + resp.status);
+      var blob = await resp.blob();
+      var url = URL.createObjectURL(blob);
+      stopSpeaking();
+      currentAudioUrl = url;
+      if (!primedPlayer) primedPlayer = new Audio();
+      currentAudio = primedPlayer;
+      currentAudio.onended = function () {
+        if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
+        currentAudio = null;
+        playNextTTS();
+      };
+      currentAudio.onerror = function () {
+        if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
+        currentAudio = null;
+        playNextTTS();
+      };
+      currentAudio.src = url;
+      await currentAudio.play();
+    } catch (_) {
+      playNextTTS();
+    }
+  }
+
+  function clearTTSQueue() {
+    ttsQueue = [];
+    ttsPlaying = false;
+  }
+
+  // ── Streaming bot bubble ──
+  function createStreamingBubble() {
+    removeWelcome();
+    var row = document.createElement("div");
+    row.className = "msg-row msg-row-bot";
+    var msg = document.createElement("div");
+    msg.className = "msg msg-bot";
+    msg.id = "streaming-msg";
+    var avatar = document.createElement("div");
+    avatar.className = "avatar avatar-bot";
+    avatar.textContent = "N";
+    row.appendChild(avatar);
+    row.appendChild(msg);
+    messagesEl.appendChild(row);
+    scrollBottom();
+    return msg;
+  }
+
+  // ── SSE parser ──
+  function parseSSE(chunk) {
+    var events = [];
+    var lines = chunk.split("\n");
+    var currentEvent = null;
+    var currentData = "";
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (line.indexOf("event: ") === 0) {
+        currentEvent = line.slice(7);
+      } else if (line.indexOf("data: ") === 0) {
+        currentData = line.slice(6);
+      } else if (line === "" && currentEvent) {
+        try { events.push({ event: currentEvent, data: JSON.parse(currentData) }); } catch (_) {}
+        currentEvent = null;
+        currentData = "";
+      }
+    }
+    return events;
+  }
+
   // ── Send message ──
   async function sendMessage() {
     var text = inputEl.value.trim();
@@ -567,9 +615,10 @@
     abortController = new AbortController();
     updateSendBtn();
     showTyping();
+    clearTTSQueue();
 
     try {
-      var resp = await fetch(SERVER_URL + "/api/chat", {
+      var resp = await fetch(SERVER_URL + "/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: abortController.signal,
@@ -581,31 +630,68 @@
       });
 
       if (!resp.ok) throw new Error("Server " + resp.status);
-      var data = await resp.json();
-      conversationId = data.conversation_id;
-      save();
+
       removeTyping();
+      var streamBubble = createStreamingBubble();
+      var fullText = "";
+      var reader = resp.body.getReader();
+      var decoder = new TextDecoder();
+      var sseBuffer = "";
 
-      // Handle actions from server
-      if (data.actions && data.actions.length) {
-        data.actions.forEach(function (action) {
-          if (action.type === "invoice-card") addInvoiceCard(action.data);
-          else if (action.type === "payment-card") addPaymentCard(action.data);
-          else if (action.type === "send-invoice") addSendInvoiceCard(action.data);
-          else if (action.type === "system") addSystem(action.text || "");
-          else if (action.type === "navigate") {
-            // Navigate after a short delay so the user sees the reply first
-            setTimeout(function () { window.location.href = action.path; }, 800);
+      while (true) {
+        var result = await reader.read();
+        if (result.done) break;
+
+        sseBuffer += decoder.decode(result.value, { stream: true });
+        var events = parseSSE(sseBuffer);
+
+        var lastDoubleNewline = sseBuffer.lastIndexOf("\n\n");
+        if (lastDoubleNewline >= 0) {
+          sseBuffer = sseBuffer.slice(lastDoubleNewline + 2);
+        }
+
+        for (var i = 0; i < events.length; i++) {
+          var evt = events[i];
+
+          if (evt.event === "token") {
+            fullText += evt.data.text;
+            streamBubble.innerHTML = formatBotText(fullText);
+            scrollBottom();
           }
-        });
+
+          else if (evt.event === "tts") {
+            queueTTS(evt.data.text);
+          }
+
+          else if (evt.event === "action") {
+            var action = evt.data;
+            if (action.type === "invoice-card") addInvoiceCard(action.data);
+            else if (action.type === "payment-card") addPaymentCard(action.data);
+            else if (action.type === "send-invoice") addSendInvoiceCard(action.data);
+            else if (action.type === "system") addSystem(action.text || "");
+            else if (action.type === "navigate") {
+              setTimeout(function () { window.location.href = action.path; }, 800);
+            }
+          }
+
+          else if (evt.event === "done") {
+            conversationId = evt.data.conversation_id;
+            setPending(evt.data.pending || null);
+            fullText = evt.data.full_text || fullText;
+            streamBubble.innerHTML = formatBotText(fullText);
+            streamBubble.id = "";
+            chatTranscript.push({ type: "message", sender: "bot", text: fullText });
+            if (chatTranscript.length > 100) chatTranscript = chatTranscript.slice(-100);
+            save();
+          }
+        }
       }
-
-      setPending(data.pending || null);
-
-      addMessage(data.reply, "bot");
-      await speakReply(data.spoken_reply || data.reply);
     } catch (err) {
       removeTyping();
+      var existingBubble = document.getElementById("streaming-msg");
+      if (existingBubble && !existingBubble.textContent.trim()) {
+        existingBubble.closest(".msg-row").remove();
+      }
       if (err && err.name === "AbortError") {
         addSystem("Response stopped.");
       } else {
