@@ -539,7 +539,10 @@
       if (!resp.ok) throw new Error("TTS " + resp.status);
       var blob = await resp.blob();
       var url = URL.createObjectURL(blob);
-      stopSpeaking();
+      if (currentAudio) {
+        try { currentAudio.pause(); currentAudio.currentTime = 0; } catch (_) {}
+      }
+      if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
       currentAudioUrl = url;
       if (!primedPlayer) primedPlayer = new Audio();
       currentAudio = primedPlayer;
