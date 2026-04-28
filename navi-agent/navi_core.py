@@ -932,15 +932,42 @@ def execute_tool(tool_name: str, tool_input: dict[str, Any], erp_client) -> dict
             log.info("create_sales_invoice called | confirmed=%s | keys=%s",
                      tool_input.get("confirmed"), list(tool_input.keys()))
 
-            # ── CONFIRMED: skip resolution, use stored values, create immediately ──
+            # ── CONFIRMED: use stored values or resolve now, then create ──
             if tool_input.get("confirmed"):
                 final_customer = tool_input.get("_resolved_customer")
                 final_items = tool_input.get("_resolved_items")
 
                 if not final_customer or not final_items:
-                    log.error("CONFIRMED but missing resolved data! customer=%s items=%s",
-                              final_customer, final_items)
-                    return {"status": "error", "error": "Internal error: missing resolved data. Please try creating the invoice again."}
+                    log.info("Confirmed but no resolved data — resolving now")
+                    final_customer, _ = resolve_customer(erp_client, tool_input["customer"])
+                    final_items = []
+                    for item in tool_input.get("items", []):
+                        rate = item.get("rate", 0)
+                        resolved_code, error, _ = resolve_item_code(
+                            erp_client, item["item_code"], rate=rate, auto_create=True,
+                        )
+                        if error:
+                            return {"status": "error", "error": error}
+                        final_items.append({"item_code": resolved_code, "qty": item["qty"], "rate": rate})
+
+                    tax_template = tool_input.get("tax_template")
+                    if tax_template and not tool_input.get("_resolved_taxes"):
+                        companies = erp_client.get_list("Company", fields=["abbr"], limit=1)
+                        abbr = companies[0]["abbr"] if companies else "BD"
+                        suffix = f" - {abbr}"
+                        template_name = tax_template if tax_template.endswith(suffix) else f"{tax_template}{suffix}"
+                        try:
+                            tmpl_doc = erp_client.get_document("Sales Taxes and Charges Template", template_name)
+                            tool_input["_resolved_taxes"] = {
+                                "template_name": template_name,
+                                "taxes": [
+                                    {"charge_type": t["charge_type"], "account_head": t["account_head"],
+                                     "rate": t["rate"], "description": t["description"]}
+                                    for t in tmpl_doc.get("taxes", [])
+                                ],
+                            }
+                        except Exception:
+                            return {"status": "error", "error": f"Tax template '{tax_template}' not found."}
 
                 data = {
                     "customer": final_customer,
